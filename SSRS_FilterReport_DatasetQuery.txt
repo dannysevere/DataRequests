@@ -1,0 +1,113 @@
+WITH gt AS (
+    SELECT 
+        f.RequestID, 
+        g.GranularityTypeId, 
+        GranularityType,
+        ROW_NUMBER() OVER (PARTITION BY f.RequestID ORDER BY g.GranularityType) AS RowNum
+    FROM [UTA_BI_DW].[DataRequests].[fact_data_request] f 
+    JOIN [UTA_BI_DW].[DataRequests].[dim_data_request_to_granularity_type] gt
+        ON f.RequestID = gt.RequestID
+    JOIN [UTA_BI_DW].[DataRequests].[dim_granularity_type] g
+        ON gt.GranularityTypeID = g.GranularityTypeID
+),
+bt AS (
+    SELECT 
+        f.RequestID, 
+        BreakdownType, 
+        b.BreakdownTypeID,
+        ROW_NUMBER() OVER (PARTITION BY f.RequestID ORDER BY bt.BreakdownType) AS RowNum
+    FROM [UTA_BI_DW].[DataRequests].[fact_data_request] f
+    JOIN [UTA_BI_DW].[DataRequests].[dim_data_request_to_breakdown_type] b
+        ON f.RequestID = b.RequestID 
+    JOIN [UTA_BI_DW].[DataRequests].[dim_breakdown_type] bt
+        ON b.BreakdownTypeID = bt.BreakdownTypeID
+),
+rt AS (
+    SELECT 
+        rt.RequestID, 
+        r.RidershipDataType,
+        ROW_NUMBER() OVER (PARTITION BY rt.RequestID ORDER BY r.RidershipDataType) AS RowNum
+    FROM [UTA_BI_DW].[DataRequests].[dim_data_request_to_ridership_type] rt
+    JOIN [UTA_BI_DW].[DataRequests].[dim_ridership_type] r
+        ON rt.RidershipDataID = r.RidershipDataID
+),
+st AS (
+    SELECT 
+        st.RequestID, 
+        s.ServiceType,
+        ROW_NUMBER() OVER (PARTITION BY st.RequestID ORDER BY s.ServiceType) AS RowNum
+    FROM [UTA_BI_DW].[DataRequests].[dim_data_request_to_service_type] st
+    JOIN [UTA_BI_DW].[DataRequests].[dim_service_type] s
+        ON st.ServiceTypeID = s.ServiceTypeID
+),
+sd AS (
+    SELECT 
+        sd.RequestID, 
+        ss.ServiceDataType,
+        ROW_NUMBER() OVER (PARTITION BY sd.RequestID ORDER BY ss.ServiceDataType) AS RowNum
+    FROM [UTA_BI_DW].[DataRequests].[dim_data_request_to_servicedata_type] sd
+    JOIN [UTA_BI_DW].[DataRequests].[dim_servicedata_type] ss
+        ON sd.ServiceDataTypeID = ss.ServiceDataTypeID
+),
+dates AS (
+    SELECT 
+        f.RequestID, 
+        CAST(d.FullDateUSA AS DATE) AS DateRequested
+    FROM 
+        [UTA_BI_DW].[DataRequests].[fact_data_request] f 
+    JOIN 
+        General.dim_date d 
+        ON f.DateRequestedID = d.DateID
+),
+RowNums AS (
+    SELECT 
+        RequestID, 
+        RowNum
+    FROM 
+        gt
+    UNION
+    SELECT 
+        RequestID, 
+        RowNum
+    FROM 
+        bt
+    UNION
+    SELECT 
+        RequestID, 
+        RowNum
+    FROM 
+        rt
+    UNION
+    SELECT 
+        RequestID, 
+        RowNum
+    FROM 
+        st
+    UNION
+    SELECT 
+        RequestID, 
+        RowNum
+    FROM 
+        sd
+)
+SELECT 
+	dates.DateRequested,
+    COALESCE(bt.RequestID, gt.RequestID, rt.RequestID, st.RequestID, sd.RequestID, dates.RequestID) AS RequestID,
+    bt.BreakdownType, 
+    gt.GranularityType,
+    rt.RidershipDataType,
+    st.ServiceType,
+    sd.ServiceDataType
+FROM 
+    RowNums rn
+FULL OUTER JOIN bt ON rn.RequestID = bt.RequestID AND rn.RowNum = bt.RowNum
+FULL OUTER JOIN gt ON rn.RequestID = gt.RequestID AND rn.RowNum = gt.RowNum
+FULL OUTER JOIN rt ON rn.RequestID = rt.RequestID AND rn.RowNum = rt.RowNum
+FULL OUTER JOIN st ON rn.RequestID = st.RequestID AND rn.RowNum = st.RowNum
+FULL OUTER JOIN sd ON rn.RequestID = sd.RequestID AND rn.RowNum = sd.RowNum
+FULL OUTER JOIN dates ON rn.RequestID = dates.RequestID
+WHERE (dates.DateRequested BETWEEN @StartDate AND @EndDate)
+ORDER BY 
+    dates.DateRequested ASC, 
+    COALESCE(bt.RequestID, gt.RequestID, rt.RequestID, st.RequestID, sd.RequestID, dates.RequestID), 
+    rn.RowNum;
