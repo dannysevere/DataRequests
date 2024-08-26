@@ -1,0 +1,225 @@
+ALTER PROCEDURE [dbo].[UpsertAsanaDataRequests]
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- CTE to sort the source data
+	DELETE FROM [Loki].[DataStrategy].[DataRequests].[Asana_DataRequests_Audit];
+
+    WITH SortedSource AS (
+        SELECT *,
+               ROW_NUMBER() OVER (ORDER BY [DateRequested]) AS RowNum
+        FROM [Alamak].[UTA_BI_DW_staging].[DataRequests].[Stage_Asana]
+    )
+
+    -- Merge statement to upsert data
+    MERGE INTO [Loki].[DataStrategy].[DataRequests].[Asana_DataRequests] AS [target]
+    USING SortedSource AS [source]
+    ON [target].[TaskID] = [source].[TaskID]
+
+    WHEN MATCHED AND (
+        ISNULL([target].[RequestedBy], '') != ISNULL([source].[RequestedBy], '') OR
+        ISNULL([target].[Department], '') != ISNULL([source].[Department], '') OR
+        ISNULL([target].[PhoneNumber], '') != ISNULL([source].[PhoneNumber], '') OR
+        ISNULL([target].[DateRequested], '1900-01-01') != ISNULL([source].[DateRequested], '1900-01-01') OR
+        ISNULL([target].[Deadline], '1900-01-01') != ISNULL([source].[Deadline], '1900-01-01') OR
+        ISNULL([target].[StartDate], '1900-01-01') != ISNULL([source].[StartDate], '1900-01-01') OR
+        ISNULL([target].[EndDate], '1900-01-01') != ISNULL([source].[EndDate], '1900-01-01') OR
+        ISNULL([target].[DataType], '') != ISNULL([source].[DataType], '') OR
+        ISNULL([target].[Breakdown], '') != ISNULL([source].[Breakdown], '') OR
+        ISNULL([target].[ServiceType], '') != ISNULL([source].[ServiceType], '') OR
+        ISNULL([target].[Granularity], '') != ISNULL([source].[Granularity], '') OR
+        ISNULL([target].[RidershipData], '') != ISNULL([source].[RidershipData], '') OR
+        ISNULL([target].[ServiceData], '') != ISNULL([source].[ServiceData], '') OR
+        ISNULL([target].[GramaRequest], '') != ISNULL([source].[GramaRequest], '') OR
+        ISNULL([target].[CompletionDate], '1900-01-01') != ISNULL([source].[CompletionDate], '1900-01-01') OR
+        ISNULL([target].[CompletionDetails], '') != ISNULL([source].[CompletionDetails], '') OR
+        ISNULL([target].[AssigneeEmail], '') != ISNULL([source].[AssigneeEmail], '') OR
+        ISNULL([target].[RequestDescription], '') != ISNULL([source].[RequestDescription], '') OR
+        ISNULL([target].[DataRequirements], '') != ISNULL([source].[DataRequirements], '') OR
+        ISNULL([target].[RequestNotes], '') != ISNULL([source].[RequestNotes], '') OR
+        ISNULL([target].[CreatedOn], '1900-01-01') != ISNULL([source].[CreatedOn], '1900-01-01') OR
+        ISNULL([target].[Last Modified], '1900-01-01') != ISNULL([source].[Last Modified], '1900-01-01') OR
+        ISNULL([target].[Section/Column], '') != ISNULL([source].[Section/Column], '') OR
+        ISNULL([target].[DueDate], '1900-01-01') != ISNULL([source].[DueDate], '1900-01-01') OR
+        ISNULL([target].[Tags], '') != ISNULL([source].[Tags], '') OR
+        ISNULL([target].[Projects], '') != ISNULL([source].[Projects], '') OR
+        ISNULL([target].[ParentTask], '') != ISNULL([source].[ParentTask], '') OR
+        ISNULL([target].[BlockedBy], '') != ISNULL([source].[BlockedBy], '') OR
+        ISNULL([target].[Blocking/Dependencies], '') != ISNULL([source].[Blocking/Dependencies], '') OR
+        ISNULL([target].[Status], '') != ISNULL([source].[Status], '')
+    )
+    THEN UPDATE SET
+        [target].[RequestedBy] = [source].[RequestedBy],
+        [target].[Department] = [source].[Department],
+        [target].[PhoneNumber] = [source].[PhoneNumber],
+        [target].[DateRequested] = [source].[DateRequested],
+        [target].[Deadline] = [source].[Deadline],
+        [target].[StartDate] = [source].[StartDate],
+        [target].[EndDate] = [source].[EndDate],
+        [target].[DataType] = [source].[DataType],
+        [target].[Breakdown] = [source].[Breakdown],
+        [target].[ServiceType] = [source].[ServiceType],
+        [target].[Granularity] = [source].[Granularity],
+        [target].[RidershipData] = [source].[RidershipData],
+        [target].[ServiceData] = [source].[ServiceData],
+        [target].[GramaRequest] = [source].[GramaRequest],
+        [target].[CompletionDate] = [source].[CompletionDate],
+        [target].[CompletionDetails] = [source].[CompletionDetails],
+        [target].[AssigneeEmail] = [source].[AssigneeEmail],
+        [target].[RequestDescription] = [source].[RequestDescription],
+        [target].[DataRequirements] = [source].[DataRequirements],
+        [target].[RequestNotes] = [source].[RequestNotes],
+        [target].[CreatedOn] = [source].[CreatedOn],
+        [target].[Last Modified] = [source].[Last Modified],
+        [target].[Section/Column] = [source].[Section/Column],
+        [target].[DueDate] = [source].[DueDate],
+        [target].[Tags] = [source].[Tags],
+        [target].[Projects] = [source].[Projects],
+        [target].[ParentTask] = [source].[ParentTask],
+        [target].[BlockedBy] = [source].[BlockedBy],
+        [target].[Blocking/Dependencies] = [source].[Blocking/Dependencies],
+        [target].[Status] = [source].[Status]
+
+    WHEN NOT MATCHED BY TARGET
+    THEN INSERT (
+        [RequestedBy],
+        [Department],
+        [PhoneNumber],
+        [DateRequested],
+        [Deadline],
+        [StartDate],
+        [EndDate],
+        [DataType],
+        [Breakdown],
+        [ServiceType],
+        [Granularity],
+        [RidershipData],
+        [ServiceData],
+        [GramaRequest],
+        [CompletionDate],
+        [CompletionDetails],
+        [AssigneeEmail],
+        [RequestDescription],
+        [DataRequirements],
+        [RequestNotes],
+        [CreatedOn],
+        [Last Modified],
+        [Section/Column],
+        [DueDate],
+        [Tags],
+        [Projects],
+        [ParentTask],
+        [BlockedBy],
+        [Blocking/Dependencies],
+        [Status],
+        [TaskID]
+    )
+    VALUES (
+        [source].[RequestedBy],
+        [source].[Department],
+        [source].[PhoneNumber],
+        [source].[DateRequested],
+        [source].[Deadline],
+        [source].[StartDate],
+        [source].[EndDate],
+        [source].[DataType],
+        [source].[Breakdown],
+        [source].[ServiceType],
+        [source].[Granularity],
+        [source].[RidershipData],
+        [source].[ServiceData],
+        [source].[GramaRequest],
+        [source].[CompletionDate],
+        [source].[CompletionDetails],
+        [source].[AssigneeEmail],
+        [source].[RequestDescription],
+        [source].[DataRequirements],
+        [source].[RequestNotes],
+        [source].[CreatedOn],
+        [source].[Last Modified],
+        [source].[Section/Column],
+        [source].[DueDate],
+        [source].[Tags],
+        [source].[Projects],
+        [source].[ParentTask],
+        [source].[BlockedBy],
+        [source].[Blocking/Dependencies],
+        [source].[Status],
+        [source].[TaskID]
+    );
+	
+	DELETE FROM [Alamak].[UTA_BI_DW_staging].[DataRequests].[Stage_Asana];
+
+    INSERT INTO [Alamak].[UTA_BI_DW_staging].[DataRequests].[Stage_Asana] (
+		[SourceID],
+        [RequestID],
+        [RequestedBy],
+        [Department],
+        [PhoneNumber],
+        [DateRequested],
+        [Deadline],
+        [StartDate],
+        [EndDate],
+        [DataType],
+        [Breakdown],
+        [ServiceType],
+        [Granularity],
+        [RidershipData],
+        [ServiceData],
+        [GramaRequest],
+        [CompletionDate],
+        [CompletionDetails],
+        [AssigneeEmail],
+        [RequestDescription],
+        [DataRequirements],
+        [RequestNotes],
+        [CreatedOn],
+        [Last Modified],
+        [Section/Column],
+        [DueDate],
+        [Tags],
+        [Projects],
+        [ParentTask],
+        [BlockedBy],
+        [Blocking/Dependencies],
+        [Status],
+        [TaskID]
+		)
+    SELECT
+		2 AS [SourceID],
+        [RequestID],
+        [RequestedBy],
+        [Department],
+        [PhoneNumber],
+        [DateRequested],
+        [Deadline],
+        [StartDate],
+        [EndDate],
+        [DataType],
+        [Breakdown],
+        [ServiceType],
+        [Granularity],
+        [RidershipData],
+        [ServiceData],
+        [GramaRequest],
+        [CompletionDate],
+        [CompletionDetails],
+        [AssigneeEmail],
+        [RequestDescription],
+        [DataRequirements],
+        [RequestNotes],
+        [CreatedOn],
+        [Last Modified],
+        [Section/Column],
+        [DueDate],
+        [Tags],
+        [Projects],
+        [ParentTask],
+        [BlockedBy],
+        [Blocking/Dependencies],
+        [Status],
+        [TaskID]
+    FROM [Loki].[DataStrategy].[DataRequests].[Asana_DataRequests_Audit];
+
+END;
