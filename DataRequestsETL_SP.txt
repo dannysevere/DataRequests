@@ -1,0 +1,1150 @@
+USE [UTA_BI_DW_staging]
+GO
+/****** Object:  StoredProcedure [DataRequests].[sp_UTA_ImportAsana]    Script Date: 7/29/2024 2:22:55 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+ALTER PROCEDURE [DataRequests].[sp_UTA_ImportAsana]
+AS
+BEGIN
+	BEGIN TRY
+
+	--populate [DataRequests].[dim_data_type]
+		INSERT INTO [UTA_BI_DW].[DataRequests].[dim_data_type]
+		(
+			DataType
+		)
+		SELECT DISTINCT 
+			DataType
+		FROM
+			[UTA_BI_DW_staging].[DataRequests].[Stage_Asana] dr
+		WHERE
+			NOT EXISTS
+			(
+				SELECT 1
+				FROM
+					[UTA_BI_DW].[DataRequests].[dim_data_type] dt
+				WHERE
+					ISNULL(dr.DataType, 'N/A') = ISNULL(dt.DataType, 'N/A')
+			)
+
+	--populate [DataRequests].[dim_breakdown_type]
+			
+		INSERT INTO [UTA_BI_DW].[DataRequests].[dim_breakdown_type]
+		(
+			[BreakdownType]
+		)
+		SELECT DISTINCT
+			a.Breakdown
+		FROM [UTA_BI_DW_staging].[DataRequests].[Stage_Asana] a
+		WHERE
+			NOT EXISTS
+			(
+				SELECT 1
+				FROM
+					[UTA_BI_DW].[DataRequests].[dim_breakdown_type] bt
+				WHERE
+					ISNULL(a.Breakdown, 'N/A') = ISNULL(bt.BreakdownType, 'N/A'))
+	
+	--populate [DataRequests].[dim_service_type]
+
+	-- The following tables have dropdown menus where multiple options can be selected, the queries below can handle being introduced to new entries, and incorporate them accordingly
+			-- It works by finding the amount of commas in an entry and extracting the choices from there.
+			-- Since the tables are essentially the same with different names, I'm reusing the code. Some tables have more or less options to be selected than the others.
+			-- In cases where there are less options, multiple NULL columns will exist, though, if in the future more options are added to the data request form, the null columns will make it easier to update the code and capture the additional entries.
+			-- On the other hand, there will likely be an error and manual input will be needed to add the necessary logic to handle additional commas. This can be accomplished fairly easily however, with copy and pasting from previous tables with similar logic.
+
+		drop table if exists #ST
+		CREATE TABLE #ST (
+			SourceID int,
+			RequestID int,
+			ServiceType varchar(500),
+			Comma_Cnt int, 
+			st1 varchar(500),
+			st2 varchar(500),
+			st3 varchar(500),
+			st4 varchar(500),
+			st5 varchar(500),
+			st6 varchar(500)
+		); -- Temp Table to store and organize results of CTE series
+
+		WITH a AS (																				-- Series of CTE's to extract Service Type when there are variable amounts selected
+				SELECT SourceID, RequestID, ServiceType
+				FROM [DataRequests].[Stage_Asana]
+			),
+			b AS (
+				SELECT SourceID, RequestID, ServiceType, 
+					   LEN(ServiceType) - LEN(REPLACE(ServiceType, ',', '')) AS comma_cnt       -- counts the # of commas in the entry, determines amount of service types chosen
+				FROM a
+			),
+			c AS ( SELECT SourceID, RequestID, ServiceType, NULL AS comma_cnt, CASE
+																WHEN ServiceType IS NULL THEN 'N/A' 
+															END AS st1, NULL AS st2, NULL AS st3, NULL AS st4, NULL AS st5, NULL AS st6
+					FROM[DataRequests].[Stage_Asana]
+					WHERE ServiceType IS NULL),
+			c0 AS (SELECT SourceID, RequestID, ServiceType, comma_cnt, 
+					CASE 
+						WHEN comma_cnt < 1 THEN ServiceType
+						WHEN ServiceType IS NULL THEN 'N/A'
+					END AS st1, 
+					NULL AS st2, NULL AS st3, NULL AS st4, NULL AS st5, NULL AS st6
+					FROM b
+					WHERE comma_cnt < 1),
+			sub AS (SELECT SourceID, RequestID, ServiceType, comma_cnt, LEFT(ServiceType, CHARINDEX(',', ServiceType) - 1) as s1,
+							SUBSTRING(ServiceType, CHARINDEX(',', ServiceType) + 2, (LEN(ServiceType) - CHARINDEX(',', ServiceType) + 2)) as s2
+					FROM b),
+			sub2 AS (SELECT SourceID, RequestID, ServiceType, comma_cnt, SUBSTRING(s2, CHARINDEX(',', s2) + 2, (LEN(s2) - CHARINDEX(',', s2) + 2)) as s3
+					FROM sub),
+			sub3 AS (SELECT SourceID, RequestID, ServiceType, comma_cnt, SUBSTRING(s3, CHARINDEX(',', s3) + 2, (LEN(s3) - CHARINDEX(',', s3) + 2)) as s4		-- sub cte's reduce the string after each comma and saved as a variable for easier referencing later in the CHARINDEX and LEFT/RIGHT Functions
+					FROM sub2),
+			sub4 AS (SELECT SourceID, RequestID, ServiceType, comma_cnt, SUBSTRING(s4, CHARINDEX(',', s4) + 2, (LEN(s4) - CHARINDEX(',', s4) + 2)) as s5
+					FROM sub3),
+			c1 AS (SELECT SourceID, RequestID, ServiceType, comma_cnt, LEFT(ServiceType, CHARINDEX(',', ServiceType) - 1) com1st1,
+							RIGHT(ServiceType, LEN(ServiceType) - CHARINDEX(',', ServiceType)-1) com1st2, NULL AS st3, NULL AS st4, NULL AS st5, NULL AS st6  -- null columns added to be able to union at the end
+					FROM b
+					WHERE comma_cnt = 1),
+			c2 AS (SELECT SourceID, RequestID, ServiceType, comma_cnt, LEFT(ServiceType, CHARINDEX(',', ServiceType) - 1) com2st1,
+						LEFT(s2,  CHARINDEX(',', SUBSTRING(ServiceType, CHARINDEX(',', ServiceType) + 2, (LEN(ServiceType) - CHARINDEX(',', ServiceType) + 2))) - 1 ) com2st2, -- c2 is a cte for strings with 2 commas and therefore 3 servicetypes
+						RIGHT(s2, LEN(s2) - CHARINDEX(',', s2) - 1) com2st3, NULL AS st4, NULL AS st5, NULL AS st6                                                     -- finds the first service type by using LEFT of the first comma, reduces string to not include the first comma and repeats with the trimmed substring.
+					
+					FROM sub
+					WHERE comma_cnt = 2),
+			c3 AS (SELECT s.SourceID, s.RequestID, s.ServiceType, s.comma_cnt, LEFT(s.ServiceType, CHARINDEX(',', s.ServiceType) - 1) com3st1,
+						LEFT(s2,  CHARINDEX(',', SUBSTRING(s.ServiceType, CHARINDEX(',', s.ServiceType) + 2, (LEN(s.ServiceType) - CHARINDEX(',', s.ServiceType) + 2))) - 1 ) com3st2,
+						LEFT(s3, CHARINDEX(',', s3) - 1) com3st3,
+							RIGHT(s3, len(s3) - CHARINDEX(',', s3)-1) com3st4, NULL AS st5, NULL AS st6
+					FROM sub s JOIN sub2 b ON s.ServiceType = b.ServiceType
+					WHERE s.comma_cnt = 3),
+			c4 AS (SELECT s.SourceID, s.RequestID, s.ServiceType, s.comma_cnt, LEFT(s.ServiceType, CHARINDEX(',', s.ServiceType) - 1) com4st1,
+						LEFT(s2,  CHARINDEX(',', SUBSTRING(s.ServiceType, CHARINDEX(',', s.ServiceType) + 2, (LEN(s.ServiceType) - CHARINDEX(',', s.ServiceType) + 2))) - 1 ) com4st2,
+						LEFT(s3, CHARINDEX(',', s3) - 1) com4st3,
+							LEFT(s4, CHARINDEX(',', s4) - 1) com4st4,
+							RIGHT(s4, len(s4) - CHARINDEX(',', s4) - 1) com4st5, NULL AS st6
+					FROM sub s JOIN sub2 b ON s.ServiceType = b.ServiceType JOIN sub3 c ON s.ServiceType = c.ServiceType
+					WHERE s.comma_cnt = 4),
+			c5 AS (SELECT s.SourceID, s.RequestID, s.ServiceType, s.comma_cnt, LEFT(s.ServiceType, CHARINDEX(',', s.ServiceType) - 1) com5st1,
+						LEFT(s2,  CHARINDEX(',', SUBSTRING(s.ServiceType, CHARINDEX(',', s.ServiceType) + 2, (LEN(s.ServiceType) - CHARINDEX(',', s.ServiceType) + 2))) - 1 ) com5st2,
+						LEFT(s3, CHARINDEX(',', s3) - 1) com5st3,
+							LEFT(s4, CHARINDEX(',', s4)-1) com5st4,
+							LEFT(s5, CHARINDEX(',', s5)-1) com5st5,
+							RIGHT(s5, len(s5) - CHARINDEX(',', s5) - 1) com5st6
+					FROM sub s JOIN sub2 b ON s.ServiceType = b.ServiceType JOIN sub3 c ON s.ServiceType = c.ServiceType JOIN sub4 d on d.ServiceType = s.ServiceType
+					WHERE s.comma_cnt = 5)
+
+
+			INSERT INTO #ST (SourceID, RequestID, ServiceType, Comma_Cnt, st1, st2, st3, st4, st5, st6)
+			SELECT SourceID, RequestID, ServiceType, Comma_Cnt, st1, st2, st3, st4, st5, st6
+			FROM c
+			UNION
+			SELECT SourceID, RequestID, ServiceType, Comma_Cnt, st1, st2, st3, st4, st5, st6
+			FROM c0
+			UNION
+			SELECT SourceID, RequestID, ServiceType, Comma_Cnt, com1st1, com1st2, st3, st4, st5, st6
+			FROM c1
+			UNION
+			SELECT SourceID, RequestID, ServiceType, Comma_Cnt, com2st1, com2st2, com2st3, st4, st5, st6          -- union into temp table for easier querying and manipulation
+			FROM c2
+			UNION
+			SELECT SourceID, RequestID, ServiceType, Comma_Cnt, com3st1, com3st2, com3st3, com3st4, st5, st6
+			FROM c3
+			UNION
+			SELECT SourceID, RequestID, ServiceType, Comma_Cnt, com4st1, com4st2, com4st3, com4st4, com4st5, st6
+			FROM c4
+			UNION
+			SELECT SourceID, RequestID, ServiceType, Comma_Cnt, com5st1, com5st2, com5st3, com5st4, com5st5, com5st6
+			FROM c5
+			ORDER BY RequestID; 
+						
+
+			WITH ct AS (
+			SELECT DISTINCT st1 FROM #ST WHERE st1 IS NOT NULL
+			UNION
+			SELECT DISTINCT st2 FROM #ST WHERE st2 IS NOT NULL
+			UNION
+			SELECT DISTINCT st3 FROM #ST WHERE st3 IS NOT NULL 
+			UNION
+			SELECT DISTINCT st4 FROM #ST WHERE st4 IS NOT NULL							-- finds unique entries and validates existence in dim_service_type. New entries are added to the dim table
+			UNION
+			SELECT DISTINCT st5 FROM #ST WHERE st5 IS NOT NULL
+			UNION
+			SELECT DISTINCT st6 FROM #ST WHERE st6 IS NOT NULL
+			)
+			INSERT INTO UTA_BI_DW.DataRequests.dim_service_type(ServiceType)
+			SELECT st1
+			FROM [DataRequests].dim_service_type d LEFT JOIN ct ON ct.st1 = d.ServiceType
+			WHERE ServiceType IS NULL;
+
+
+	-- populate [DataRequests].[dim_data_request_to_service_type]
+
+		TRUNCATE TABLE #ST;
+		WITH a AS (
+			SELECT SourceID, RequestID, ServiceType
+			FROM [DataRequests].[Stage_Asana]
+		),
+		b AS (
+			SELECT SourceID, RequestID, ServiceType, 
+				   LEN(ServiceType) - LEN(REPLACE(ServiceType, ',', '')) AS comma_cnt
+			FROM a
+		),
+		c AS ( SELECT SourceID, RequestID, ServiceType, NULL AS comma_cnt, CASE
+															WHEN ServiceType IS NULL THEN 'N/A' 
+														END AS st1, NULL AS st2, NULL AS st3, NULL AS st4, NULL AS st5, NULL AS st6
+				FROM [DataRequests].[Stage_Asana]
+				WHERE ServiceType IS NULL),
+		c0 AS (SELECT SourceID, RequestID, ServiceType, comma_cnt, 
+				CASE 
+					WHEN comma_cnt < 1 THEN ServiceType
+					WHEN ServiceType IS NULL THEN 'N/A'
+				END AS st1, 
+				NULL AS st2, NULL AS st3, NULL AS st4, NULL AS st5, NULL AS st6
+				FROM b
+				WHERE comma_cnt < 1),
+		sub AS (SELECT SourceID, RequestID, ServiceType, comma_cnt, LEFT(ServiceType, CHARINDEX(',', ServiceType) - 1) as s1,
+						SUBSTRING(ServiceType, CHARINDEX(',', ServiceType) + 2, (LEN(ServiceType) - CHARINDEX(',', ServiceType) + 2)) as s2
+				FROM b),
+		sub2 AS (SELECT SourceID, RequestID, ServiceType, comma_cnt, SUBSTRING(s2, CHARINDEX(',', s2) + 2, (LEN(s2) - CHARINDEX(',', s2) + 2)) as s3
+				FROM sub),
+		sub3 AS (SELECT SourceID, RequestID, ServiceType, comma_cnt, SUBSTRING(s3, CHARINDEX(',', s3) + 2, (LEN(s3) - CHARINDEX(',', s3) + 2)) as s4
+				FROM sub2),
+		sub4 AS (SELECT SourceID, RequestID, ServiceType, comma_cnt, SUBSTRING(s4, CHARINDEX(',', s4) + 2, (LEN(s4) - CHARINDEX(',', s4) + 2)) as s5
+				FROM sub3),
+		c1 AS (SELECT SourceID, RequestID, ServiceType, comma_cnt, LEFT(ServiceType, CHARINDEX(',', ServiceType) - 1) com1st1,
+						RIGHT(ServiceType, LEN(ServiceType) - CHARINDEX(',', ServiceType)-1) com1st2, NULL AS st3, NULL AS st4, NULL AS st5, NULL AS st6
+				FROM b
+				WHERE comma_cnt = 1),
+		c2 AS (SELECT SourceID, RequestID, ServiceType, comma_cnt, LEFT(ServiceType, CHARINDEX(',', ServiceType) - 1) com2st1,
+					LEFT(s2,  CHARINDEX(',', SUBSTRING(ServiceType, CHARINDEX(',', ServiceType) + 2, (LEN(ServiceType) - CHARINDEX(',', ServiceType) + 2))) - 1 ) com2st2,
+					RIGHT(s2, LEN(s2) - CHARINDEX(',', s2) - 1) com2st3, NULL AS st4, NULL AS st5, NULL AS st6
+					
+				FROM sub
+				WHERE comma_cnt = 2),
+		c3 AS (SELECT s.SourceID, s.RequestID, s.ServiceType, s.comma_cnt, LEFT(s.ServiceType, CHARINDEX(',', s.ServiceType) - 1) com3st1,
+					LEFT(s2,  CHARINDEX(',', SUBSTRING(s.ServiceType, CHARINDEX(',', s.ServiceType) + 2, (LEN(s.ServiceType) - CHARINDEX(',', s.ServiceType) + 2))) - 1 ) com3st2,
+					LEFT(s3, CHARINDEX(',', s3) - 1) com3st3,
+						RIGHT(s3, len(s3) - CHARINDEX(',', s3)-1) com3st4, NULL AS st5, NULL AS st6
+				FROM sub s JOIN sub2 b ON s.ServiceType = b.ServiceType
+				WHERE s.comma_cnt = 3),
+		c4 AS (SELECT s.SourceID, s.RequestID, s.ServiceType, s.comma_cnt, LEFT(s.ServiceType, CHARINDEX(',', s.ServiceType) - 1) com4st1,
+					LEFT(s2,  CHARINDEX(',', SUBSTRING(s.ServiceType, CHARINDEX(',', s.ServiceType) + 2, (LEN(s.ServiceType) - CHARINDEX(',', s.ServiceType) + 2))) - 1 ) com4st2,
+					LEFT(s3, CHARINDEX(',', s3) - 1) com4st3,
+						LEFT(s4, CHARINDEX(',', s4) - 1) com4st4,
+						RIGHT(s4, len(s4) - CHARINDEX(',', s4) - 1) com4st5, NULL AS st6
+				FROM sub s JOIN sub2 b ON s.ServiceType = b.ServiceType JOIN sub3 c ON s.ServiceType = c.ServiceType
+				WHERE s.comma_cnt = 4),
+		c5 AS (SELECT s.SourceID, s.RequestID, s.ServiceType, s.comma_cnt, LEFT(s.ServiceType, CHARINDEX(',', s.ServiceType) - 1) com5st1,
+					LEFT(s2,  CHARINDEX(',', SUBSTRING(s.ServiceType, CHARINDEX(',', s.ServiceType) + 2, (LEN(s.ServiceType) - CHARINDEX(',', s.ServiceType) + 2))) - 1 ) com5st2,
+					LEFT(s3, CHARINDEX(',', s3) - 1) com5st3,
+						LEFT(s4, CHARINDEX(',', s4)-1) com5st4,
+						LEFT(s5, CHARINDEX(',', s5)-1) com5st5,
+						RIGHT(s5, len(s5) - CHARINDEX(',', s5) - 1) com5st6
+				FROM sub s JOIN sub2 b ON s.ServiceType = b.ServiceType JOIN sub3 c ON s.ServiceType = c.ServiceType JOIN sub4 d on d.ServiceType = s.ServiceType
+				WHERE s.comma_cnt = 5)
+
+
+		INSERT INTO #ST (SourceID, RequestID, ServiceType, Comma_Cnt, st1, st2, st3, st4, st5, st6)
+		SELECT SourceID, RequestID, ServiceType, Comma_Cnt, st1, st2, st3, st4, st5, st6 FROM c
+		UNION
+		SELECT SourceID, RequestID, ServiceType, Comma_Cnt, st1, st2, st3, st4, st5, st6 FROM c0
+		UNION
+		SELECT SourceID, RequestID, ServiceType, Comma_Cnt, com1st1, com1st2, st3, st4, st5, st6 FROM c1
+		UNION 
+		SELECT SourceID, RequestID, ServiceType, Comma_Cnt, com2st1, com2st2, com2st3, st4, st5, st6 FROM c2
+		UNION
+		SELECT SourceID, RequestID, ServiceType, Comma_Cnt, com3st1, com3st2, com3st3, com3st4, st5, st6 FROM c3
+		UNION 
+		SELECT SourceID, RequestID, ServiceType, Comma_Cnt, com4st1, com4st2, com4st3, com4st4, com4st5, st6 FROM c4
+		UNION
+		SELECT SourceID, RequestID, ServiceType, Comma_Cnt, com5st1, com5st2, com5st3, com5st4, com5st5, com5st6 FROM c5
+		ORDER BY RequestID;
+
+		drop table if exists #varlist
+		CREATE TABLE #varlist (STval varchar(10));
+		INSERT INTO #varlist (STval)
+			VALUES ('st1'), ('st2'), ('st3'), ('st4'), ('st5'), ('st6');
+																								-- populate temptable to tell select statement which servicetype column to iterate through
+		DECLARE @counter INT = 1;															 
+		DECLARE @maxcount INT = (SELECT COUNT(*) FROM #varlist);
+		DECLARE @currentst varchar(10);															-- variables to run while loop
+		DECLARE @sql nvarchar(max);
+
+		WHILE @counter <= @maxcount
+		BEGIN
+			SELECT @currentst = STval
+			FROM (
+				SELECT STval, ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS RowNum              -- SELECT STATEMENT iterates through temp table and the joins the dynamic sql query based on the current value
+				FROM #varlist
+			) AS OrderedVarList														
+			WHERE RowNum = @counter
+																								-- Dynamic SQL query: useful when dealing with changing parameters like @currentst. Builds query as a string, and executes it. This makes it possible to insert multiple times without having to write multiple insert queries.
+			SET @sql = N'INSERT INTO [UTA_BI_DW].[DataRequests].[dim_data_request_to_service_type] (SourceID, RequestID, ServiceTypeID)
+			SELECT s.SourceID, s.RequestID, st.ServiceTypeID
+			FROM #ST s 
+			JOIN [DataRequests].dim_service_type st 
+			ON st.ServiceType = CASE
+									WHEN ''' + @currentst + ''' = ''st1'' THEN s.st1
+									WHEN ''' + @currentst + ''' = ''st2'' THEN s.st2
+									WHEN ''' + @currentst + ''' = ''st3'' THEN s.st3
+									WHEN ''' + @currentst + ''' = ''st4'' THEN s.st4
+									WHEN ''' + @currentst + ''' = ''st5'' THEN s.st5
+									WHEN ''' + @currentst + ''' = ''st6'' THEN s.st6
+									ELSE NULL
+								 END
+			WHERE NOT EXISTS (
+				SELECT 1
+				FROM [UTA_BI_DW].[DataRequests].[dim_data_request_to_service_type] dr
+				WHERE dr.SourceID = s.SourceID
+				  AND dr.RequestID = s.RequestID
+				  AND dr.ServiceTypeID = st.ServiceTypeID
+			)
+			';
+
+			EXEC sp_executesql @sql
+			SET @counter = @counter +1
+		End;
+
+	-- populate [DataRequest].[dim_granularity_type]
+		drop table if exists #GT
+		CREATE TABLE #GT (
+			SourceID int,
+			RequestID int,
+			Granularity varchar(500),
+			Comma_Cnt int, 
+			gt1 varchar(500),
+			gt2 varchar(500),
+			gt3 varchar(500),
+			gt4 varchar(500),
+			gt5 varchar(500),
+			gt6 varchar(500)
+		); -- Temp Table to store and organize results of CTE series
+
+		WITH a AS (																				-- Series of CTE's to extract Granularity Type when there are variable amounts selected
+				SELECT SourceID, RequestID, Granularity
+				FROM [DataRequests].[Stage_Asana]
+			),
+			b AS (
+				SELECT SourceID, RequestID, Granularity, 
+					   LEN(Granularity) - LEN(REPLACE(Granularity, ',', '')) AS comma_cnt       -- counts the # of commas in the entry, determines amount of granularity types chosen
+				FROM a
+			),
+			c AS ( SELECT SourceID, RequestID, Granularity, NULL AS comma_cnt, CASE
+																WHEN Granularity IS NULL THEN 'N/A' 
+															END AS gt1, NULL AS gt2, NULL AS gt3, NULL AS gt4, NULL AS gt5, NULL AS gt6
+					FROM[DataRequests].[Stage_Asana]
+					WHERE Granularity IS NULL),
+			c0 AS (SELECT SourceID, RequestID, Granularity, comma_cnt, 
+					CASE 
+						WHEN comma_cnt < 1 THEN Granularity
+						WHEN Granularity IS NULL THEN 'N/A'
+					END AS gt1, NULL AS gt2, NULL AS gt3, NULL AS gt4, NULL AS gt5, NULL AS gt6
+					FROM b
+					WHERE comma_cnt < 1),
+			sub AS (SELECT SourceID, RequestID, Granularity, comma_cnt, LEFT(Granularity, CHARINDEX(',', Granularity) - 1) as s1,
+							SUBSTRING(Granularity, CHARINDEX(',', Granularity) + 2, (LEN(Granularity) - CHARINDEX(',', Granularity) + 2)) as s2
+					FROM b),
+			sub2 AS (SELECT SourceID, RequestID, Granularity, comma_cnt, SUBSTRING(s2, CHARINDEX(',', s2) + 2, (LEN(s2) - CHARINDEX(',', s2) + 2)) as s3
+					FROM sub),
+			sub3 AS (SELECT SourceID, RequestID, Granularity, comma_cnt, SUBSTRING(s3, CHARINDEX(',', s3) + 2, (LEN(s3) - CHARINDEX(',', s3) + 2)) as s4		-- sub cte's reduce the string after each comma and saved as a variable for easier referencing later in the CHARINDEX and LEFT/RIGHT Functions
+					FROM sub2),
+			sub4 AS (SELECT SourceID, RequestID, Granularity, comma_cnt, SUBSTRING(s4, CHARINDEX(',', s4) + 2, (LEN(s4) - CHARINDEX(',', s4) + 2)) as s5
+					FROM sub3),
+			c1 AS (SELECT SourceID, RequestID, Granularity, comma_cnt, LEFT(Granularity, CHARINDEX(',', Granularity) - 1) com1gt1,
+							RIGHT(Granularity, LEN(Granularity) - CHARINDEX(',', Granularity)-1) com1gt2, NULL AS gt3, NULL AS gt4, NULL AS gt5, NULL AS gt6  -- null columns added to be able to union at the end
+					FROM b
+					WHERE comma_cnt = 1),
+			c2 AS (SELECT SourceID, RequestID, Granularity, comma_cnt, LEFT(Granularity, CHARINDEX(',', Granularity) - 1) com2gt1,
+						LEFT(s2,  CHARINDEX(',', SUBSTRING(Granularity, CHARINDEX(',', Granularity) + 2, (LEN(Granularity) - CHARINDEX(',', Granularity) + 2))) - 1 ) com2gt2, -- c2 is a cte for strings with 2 commas and therefore 3 granularity types
+						RIGHT(s2, LEN(s2) - CHARINDEX(',', s2) - 1) com2gt3, NULL AS gt4, NULL AS gt5, NULL AS gt6                                                     -- finds the first granularity type by using LEFT of the first comma, reducese string to not include the first comma and repeats with the trimmed substring.
+					
+					FROM sub
+					WHERE comma_cnt = 2),
+			c3 AS (SELECT s.SourceID, s.RequestID, s.Granularity, s.comma_cnt, LEFT(s.Granularity, CHARINDEX(',', s.Granularity) - 1) com3gt1,
+						LEFT(s2,  CHARINDEX(',', SUBSTRING(s.Granularity, CHARINDEX(',', s.Granularity) + 2, (LEN(s.Granularity) - CHARINDEX(',', s.Granularity) + 2))) - 1 ) com3gt2,
+						LEFT(s3, CHARINDEX(',', s3) - 1) com3gt3,
+							RIGHT(s3, len(s3) - CHARINDEX(',', s3)-1) com3gt4, NULL AS gt5, NULL AS gt6  
+					FROM sub s JOIN sub2 b ON s.Granularity = b.Granularity
+					WHERE s.comma_cnt = 3),
+			c4 AS (SELECT s.SourceID, s.RequestID, s.Granularity, s.comma_cnt, LEFT(s.Granularity, CHARINDEX(',', s.Granularity) - 1) com4gt1,
+						LEFT(s2,  CHARINDEX(',', SUBSTRING(s.Granularity, CHARINDEX(',', s.Granularity) + 2, (LEN(s.Granularity) - CHARINDEX(',', s.Granularity) + 2))) - 1 ) com4gt2,
+						LEFT(s3, CHARINDEX(',', s3) - 1) com4gt3,
+							LEFT(s4, CHARINDEX(',', s4) - 1) com4gt4,
+							RIGHT(s4, len(s4) - CHARINDEX(',', s4) - 1) com4gt5, NULL AS gt6  
+					FROM sub s JOIN sub2 b ON s.Granularity = b.Granularity JOIN sub3 c ON s.Granularity = c.Granularity
+					WHERE s.comma_cnt = 4),
+			c5 AS (SELECT s.SourceID, s.RequestID, s.Granularity, s.comma_cnt, LEFT(s.Granularity, CHARINDEX(',', s.Granularity) - 1) com5gt1,
+						LEFT(s2,  CHARINDEX(',', SUBSTRING(s.Granularity, CHARINDEX(',', s.Granularity) + 2, (LEN(s.Granularity) - CHARINDEX(',', s.Granularity) + 2))) - 1 ) com5gt2,
+						LEFT(s3, CHARINDEX(',', s3) - 1) com5gt3,
+							LEFT(s4, CHARINDEX(',', s4)-1) com5gt4,
+							LEFT(s5, CHARINDEX(',', s5)-1) com5gt5,
+							RIGHT(s5, len(s5) - CHARINDEX(',', s5) - 1) com5gt6
+					FROM sub s JOIN sub2 b ON s.Granularity = b.Granularity JOIN sub3 c ON s.Granularity = c.Granularity JOIN sub4 d on d.Granularity = s.Granularity
+					WHERE s.comma_cnt = 5)
+
+
+			INSERT INTO #GT (SourceID, RequestID, Granularity, Comma_Cnt, gt1, gt2, gt3, gt4, gt5, gt6)
+			SELECT SourceID, RequestID, Granularity, Comma_Cnt, gt1, gt2, gt3, gt4, gt5, gt6
+			FROM c
+			UNION
+			SELECT SourceID, RequestID, Granularity, Comma_Cnt, gt1, gt2, gt3, gt4, gt5, gt6
+			FROM c0
+			UNION
+			SELECT SourceID, RequestID, Granularity, Comma_Cnt, com1gt1, com1gt2, gt3, gt4, gt5, gt6
+			FROM c1
+			UNION
+			SELECT SourceID, RequestID, Granularity, Comma_Cnt, com2gt1, com2gt2, com2gt3, gt4, gt5, gt6       -- union into temp table for easier querying and manipulation
+			FROM c2
+			UNION
+			SELECT SourceID, RequestID, Granularity, Comma_Cnt, com3gt1, com3gt2, com3gt3, com3gt4, gt5, gt6 
+			FROM c3
+			UNION
+			SELECT SourceID, RequestID, Granularity, Comma_Cnt, com4gt1, com4gt2, com4gt3, com4gt4, com4gt5, gt6 
+			FROM c4
+			UNION
+			SELECT SourceID, RequestID, Granularity, Comma_Cnt, com5gt1, com5gt2, com5gt3, com5gt4, com5gt5, com5gt6
+			FROM c5
+			ORDER BY RequestID; 
+						
+
+			WITH ct AS (
+			SELECT DISTINCT gt1 FROM #GT WHERE gt1 IS NOT NULL
+			UNION
+			SELECT DISTINCT gt2 FROM #GT WHERE gt2 IS NOT NULL
+			UNION
+			SELECT DISTINCT gt3 FROM #GT WHERE gt3 IS NOT NULL 
+			UNION
+			SELECT DISTINCT gt4 FROM #GT WHERE gt4 IS NOT NULL							-- finds unique entries and validates existence in dim_granularity_type. New entries are added to the dim table
+			UNION
+			SELECT DISTINCT gt5 FROM #GT WHERE gt5 IS NOT NULL
+			UNION
+			SELECT DISTINCT gt6 FROM #GT WHERE gt6 IS NOT NULL
+			)
+			INSERT INTO UTA_BI_DW.DataRequests.dim_granularity_type (GranularityType)
+			SELECT gt1
+			FROM [DataRequests].dim_granularity_type d LEFT JOIN ct ON ct.gt1 = d.GranularityType
+			WHERE GranularityType IS NULL;
+
+
+	-- populate [DataRequests].[dim_request_to_granularity_type]
+
+				drop table if exists #varlistgt
+				CREATE TABLE #varlistgt (GTval varchar(10));					
+				INSERT INTO #varlistgt (GTval)
+					VALUES ('gt1'), ('gt2'), ('gt3'), ('gt4'), ('gt5'), ('gt6');
+
+				DECLARE @countergt INT = 1;
+				DECLARE @maxcountgt INT = (SELECT COUNT(*) FROM #varlistgt);
+				DECLARE @currentgt varchar(10);
+				DECLARE @sqlgt nvarchar(max);
+
+				WHILE @countergt <= @maxcountgt
+				BEGIN
+					SELECT @currentgt = GTval
+					FROM (
+						SELECT GTval, ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS RowNum
+						FROM #varlistgt
+					) AS OrderedVarList
+					WHERE RowNum = @countergt
+	
+					SET @sqlgt = N'INSERT INTO [UTA_BI_DW].[DataRequests].[dim_data_request_to_granularity_type] (SourceID, RequestID, GranularityTypeID)
+					SELECT g.SourceID, g.RequestID, gt.GranularityTypeID
+					FROM #GT g 
+					JOIN [DataRequests].dim_granularity_type gt 
+					ON gt.GranularityType = CASE
+											WHEN ''' + @currentgt + ''' = ''gt1'' THEN g.gt1
+											WHEN ''' + @currentgt + ''' = ''gt2'' THEN g.gt2
+											WHEN ''' + @currentgt + ''' = ''gt3'' THEN g.gt3
+											WHEN ''' + @currentgt + ''' = ''gt4'' THEN g.gt4
+											WHEN ''' + @currentgt + ''' = ''gt5'' THEN g.gt5
+											WHEN ''' + @currentgt + ''' = ''gt6'' THEN g.gt6
+											ELSE NULL
+											END
+					WHERE NOT EXISTS (
+						SELECT 1
+						FROM [UTA_BI_DW].[DataRequests].[dim_data_request_to_granularity_type] dr
+						WHERE dr.SourceID = g.SourceID
+							AND dr.RequestID = g.RequestID
+							AND dr.GranularityTypeID = gt.GranularityTypeID
+					)
+					';
+
+					EXEC sp_executesql @sqlgt
+					SET @countergt = @countergt +1
+				End;
+	
+	-- populating [DataRequests].[dim_ridership_type]
+		drop table if exists #RT
+		CREATE TABLE #RT (
+			SourceID int,
+			RequestID int,
+			RidershipData varchar(500),
+			Comma_Cnt int, 
+			rt1 varchar(500),
+			rt2 varchar(500),
+			rt3 varchar(500),
+			rt4 varchar(500),
+			rt5 varchar(500),
+			rt6 varchar(500),
+			rt7 varchar(500)
+		); -- Temp Table to store and organize results of CTE series
+
+		WITH a AS (																				-- Series of CTE's to extract Granularity Type when there are variable amounts selected
+				SELECT SourceID, RequestID, RidershipData
+				FROM [DataRequests].[Stage_Asana]
+			),
+			b AS (
+				SELECT SourceID, RequestID, RidershipData, 
+					   LEN(RidershipData) - LEN(REPLACE(RidershipData, ',', '')) AS comma_cnt       -- counts the # of commas in the entry, determines amount of ridership types chosen
+				FROM a
+			),
+			c AS ( SELECT SourceID, RequestID, RidershipData, NULL AS comma_cnt, CASE
+																WHEN RidershipData IS NULL THEN 'N/A' 
+															END AS rt1, NULL AS rt2, NULL AS rt3, NULL AS rt4, NULL AS rt5, NULL AS rt6, NULL AS rt7
+					FROM[DataRequests].[Stage_Asana]
+					WHERE RidershipData IS NULL),
+			c0 AS (SELECT SourceID, RequestID, RidershipData, comma_cnt, 
+					CASE 
+						WHEN comma_cnt < 1 THEN RidershipData
+						WHEN RidershipData IS NULL THEN 'N/A'
+					END AS rt1, NULL AS rt2, NULL AS rt3, NULL AS rt4, NULL AS rt5, NULL AS rt6, NULL AS rt7
+					FROM b
+					WHERE comma_cnt < 1),
+			sub AS (SELECT SourceID, RequestID, RidershipData, comma_cnt, LEFT(RidershipData, CHARINDEX(',', RidershipData) - 1) as s1,
+							SUBSTRING(RidershipData, CHARINDEX(',', RidershipData) + 2, (LEN(RidershipData) - CHARINDEX(',', RidershipData) + 2)) as s2
+					FROM b),
+			sub2 AS (SELECT SourceID, RequestID, RidershipData, comma_cnt, SUBSTRING(s2, CHARINDEX(',', s2) + 2, (LEN(s2) - CHARINDEX(',', s2) + 2)) as s3
+					FROM sub),
+			sub3 AS (SELECT SourceID, RequestID, RidershipData, comma_cnt, SUBSTRING(s3, CHARINDEX(',', s3) + 2, (LEN(s3) - CHARINDEX(',', s3) + 2)) as s4		-- sub cte's reduce the string after each comma and saved as a variable for easier referencing later in the CHARINDEX and LEFT/RIGHT Functions
+					FROM sub2),
+			sub4 AS (SELECT SourceID, RequestID, RidershipData, comma_cnt, SUBSTRING(s4, CHARINDEX(',', s4) + 2, (LEN(s4) - CHARINDEX(',', s4) + 2)) as s5
+					FROM sub3),
+			sub5 AS (SELECT SourceID, RequestID, RidershipData, comma_cnt, SUBSTRING(s5, CHARINDEX(',', s5) + 2, (LEN(s5) - CHARINDEX(',', s5) + 2)) as s6
+					FROM sub4),
+			c1 AS (SELECT SourceID, RequestID, RidershipData, comma_cnt, LEFT(RidershipData, CHARINDEX(',', RidershipData) - 1) com1rt1,
+							RIGHT(RidershipData, LEN(RidershipData) - CHARINDEX(',', RidershipData)-1) com1rt2, NULL AS rt3, NULL AS rt4, NULL AS rt5, NULL AS rt6, NULL AS rt7  -- null columns added to be able to union at the end
+					FROM b
+					WHERE comma_cnt = 1),
+			c2 AS (SELECT SourceID, RequestID, RidershipData, comma_cnt, LEFT(RidershipData, CHARINDEX(',', RidershipData) - 1) com2rt1,
+						LEFT(s2,  CHARINDEX(',', SUBSTRING(RidershipData, CHARINDEX(',', RidershipData) + 2, (LEN(RidershipData) - CHARINDEX(',', RidershipData) + 2))) - 1 ) com2rt2, -- c2 is a cte for strings with 2 commas and therefore 3 ridership types
+						RIGHT(s2, LEN(s2) - CHARINDEX(',', s2) - 1) com2rt3, NULL AS rt4, NULL AS rt5, NULL AS rt6, NULL AS rt7                                              -- finds the first ridership type by using LEFT of the first comma, reducese string to not include the first comma and repeats with the trimmed substring.
+					FROM sub
+					WHERE comma_cnt = 2),
+			c3 AS (SELECT s.SourceID, s.RequestID, s.RidershipData, s.comma_cnt, LEFT(s.RidershipData, CHARINDEX(',', s.RidershipData) - 1) com3rt1,
+						LEFT(s2,  CHARINDEX(',', SUBSTRING(s.RidershipData, CHARINDEX(',', s.RidershipData) + 2, (LEN(s.RidershipData) - CHARINDEX(',', s.RidershipData) + 2))) - 1 ) com3rt2,
+						LEFT(s3, CHARINDEX(',', s3) - 1) com3rt3,
+							RIGHT(s3, len(s3) - CHARINDEX(',', s3)-1) com3rt4, NULL AS rt5, NULL AS rt6, NULL AS rt7
+					FROM sub s JOIN sub2 b ON s.RidershipData = b.RidershipData
+					WHERE s.comma_cnt = 3),
+			c4 AS (SELECT s.SourceID, s.RequestID, s.RidershipData, s.comma_cnt, LEFT(s.RidershipData, CHARINDEX(',', s.RidershipData) - 1) com4rt1,
+						LEFT(s2,  CHARINDEX(',', SUBSTRING(s.RidershipData, CHARINDEX(',', s.RidershipData) + 2, (LEN(s.RidershipData) - CHARINDEX(',', s.RidershipData) + 2))) - 1 ) com4rt2,
+						LEFT(s3, CHARINDEX(',', s3) - 1) com4rt3,
+							LEFT(s4, CHARINDEX(',', s4) - 1) com4rt4,
+							RIGHT(s4, len(s4) - CHARINDEX(',', s4) - 1) com4rt5, NULL AS rt6, NULL AS rt7
+					FROM sub s JOIN sub2 b ON s.RidershipData = b.RidershipData JOIN sub3 c ON s.RidershipData = c.RidershipData
+					WHERE s.comma_cnt = 4),
+			c5 AS (SELECT s.SourceID, s.RequestID, s.RidershipData, s.comma_cnt, LEFT(s.RidershipData, CHARINDEX(',', s.RidershipData) - 1) com5rt1,
+						LEFT(s2,  CHARINDEX(',', SUBSTRING(s.RidershipData, CHARINDEX(',', s.RidershipData) + 2, (LEN(s.RidershipData) - CHARINDEX(',', s.RidershipData) + 2))) - 1 ) com5rt2,
+						LEFT(s3, CHARINDEX(',', s3) - 1) com5rt3,
+							LEFT(s4, CHARINDEX(',', s4)-1) com5rt4,
+							LEFT(s5, CHARINDEX(',', s5)-1) com5rt5,
+							RIGHT(s5, len(s5) - CHARINDEX(',', s5) - 1) com5rt6, NULL AS rt7
+					FROM sub s JOIN sub2 b ON s.RidershipData = b.RidershipData JOIN sub3 c ON s.RidershipData = c.RidershipData JOIN sub4 d on d.RidershipData = s.RidershipData
+					WHERE s.comma_cnt = 5),
+			c6 AS (SELECT s.SourceID, s.RequestID, s.RidershipData, s.comma_cnt, LEFT(s.RidershipData, CHARINDEX(',', s.RidershipData) - 1) com6rt1,
+						LEFT(s2,  CHARINDEX(',', SUBSTRING(s.RidershipData, CHARINDEX(',', s.RidershipData) + 2, (LEN(s.RidershipData) - CHARINDEX(',', s.RidershipData) + 2))) - 1 ) com6rt2,
+						LEFT(s3, CHARINDEX(',', s3) - 1) com6rt3,
+							LEFT(s4, CHARINDEX(',', s4) - 1) com6rt4,
+							LEFT(s5, CHARINDEX(',', s5) - 1) com6rt5,
+							LEFT(s6, CHARINDEX(',', s6) - 1) com6rt6,
+							RIGHT(s6, len(s6) - CHARINDEX(',', s6) - 1) com6rt7, NULL AS rt7
+					FROM sub s JOIN sub2 b ON s.RidershipData = b.RidershipData JOIN sub3 c ON s.RidershipData = c.RidershipData JOIN sub4 d on d.RidershipData = s.RidershipData JOIN sub5 e ON e.RidershipData = s.RidershipData
+					WHERE s.comma_cnt = 6)
+
+
+			INSERT INTO #RT (SourceID, RequestID, RidershipData, Comma_Cnt, rt1, rt2, rt3, rt4, rt5, rt6, rt7)
+			SELECT SourceID, RequestID, RidershipData, Comma_Cnt, rt1, rt2, rt3, rt4, rt5, rt6, rt7 FROM c
+			UNION
+			SELECT SourceID, RequestID, RidershipData, Comma_Cnt, rt1, rt2, rt3, rt4, rt5, rt6, rt7 FROM c0
+			UNION
+			SELECT SourceID, RequestID, RidershipData, Comma_Cnt, com1rt1, com1rt2, rt3, rt4, rt5, rt6, rt7 FROM c1
+			UNION
+			SELECT SourceID, RequestID, RidershipData, Comma_Cnt, com2rt1, com2rt2, com2rt3, rt4, rt5, rt6, rt7 FROM c2     -- union into temp table for easier querying and manipulation
+			UNION
+			SELECT SourceID, RequestID, RidershipData, Comma_Cnt, com3rt1, com3rt2, com3rt3, com3rt4, rt5, rt6, rt7 FROM c3
+			UNION
+			SELECT SourceID, RequestID, RidershipData, Comma_Cnt, com4rt1, com4rt2, com4rt3, com4rt4, com4rt5, rt6, rt7 FROM c4
+			UNION
+			SELECT SourceID, RequestID, RidershipData, Comma_Cnt, com5rt1, com5rt2, com5rt3, com5rt4, com5rt5, com5rt6, rt7 FROM c5
+			UNION
+			SELECT SourceID, RequestID, RidershipData, Comma_Cnt, com6rt1, com6rt2, com6rt3, com6rt4, com6rt5, com6rt6, com6rt7 FROM c6
+			ORDER BY RequestID; 
+						
+
+			WITH ct AS (
+			SELECT DISTINCT rt1 FROM #RT WHERE rt1 IS NOT NULL
+			UNION
+			SELECT DISTINCT rt2 FROM #RT WHERE rt2 IS NOT NULL
+			UNION
+			SELECT DISTINCT rt3 FROM #RT WHERE rt3 IS NOT NULL 
+			UNION
+			SELECT DISTINCT rt4 FROM #RT WHERE rt4 IS NOT NULL							-- finds unique entries and validates existence in dim_ridership_type. New entries are added to the dim table
+			UNION
+			SELECT DISTINCT rt5 FROM #RT WHERE rt5 IS NOT NULL
+			UNION
+			SELECT DISTINCT rt6 FROM #RT WHERE rt6 IS NOT NULL
+			UNION
+			SELECT DISTINCT rt7 FROM #RT WHERE rt7 IS NOT NULL
+			),
+			ct2 AS (SELECT CASE
+									WHEN ct.rt1 = 'Average Sat' THEN 'Avg SAT'
+									WHEN ct.rt1 = 'Average Sun' THEN 'Avg SUN'
+									WHEN ct.rt1 = 'Passener MIles' THEN 'Passenger Miles'
+									WHEN ct.rt1 = 'Average Wkd' THEN 'Avg WKD'
+									WHEN ct.rt1 = 'Boarding' THEN 'Boardings'
+									ELSE ct.rt1
+								END AS rt1
+							FROM ct)
+
+			INSERT INTO [UTA_BI_DW].[DataRequests].[dim_ridership_type] (RidershipDataType)
+			SELECT rt1
+			FROM [UTA_BI_DW].[DataRequests].[dim_ridership_type] r RIGHT JOIN ct2 ON ct2.rt1 = r.RidershipDataType
+			WHERE RidershipDataType IS NULL;
+	 
+	-- Populate [UTA_BI_DW].[DataRequests].[dim_request_to_ridership_type]
+		drop table if exists #varlistrt
+		CREATE TABLE #varlistrt (RTval varchar(10));					
+		INSERT INTO #varlistrt (RTval)
+			VALUES ('rt1'), ('rt2'), ('rt3'), ('rt4'), ('rt5'), ('rt6'), ('rt7');
+
+		DECLARE @counterrt INT = 1;
+		DECLARE @maxcountrt INT = (SELECT COUNT(*) FROM #varlistrt);
+		DECLARE @currentrt varchar(10);
+		DECLARE @sqlrt nvarchar(max);
+
+		WHILE @counterrt <= @maxcountrt
+		BEGIN
+			SELECT @currentrt = RTval
+			FROM (
+				SELECT RTval, ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS RowNum
+				FROM #varlistrt
+			) AS OrderedVarList
+			WHERE RowNum = @counterrt
+			
+			SET @sqlrt = N'INSERT INTO [UTA_BI_DW].[DataRequests].[dim_data_request_to_ridership_type] (SourceID, RequestID, RidershipDataID)
+			SELECT r.SourceID, r.RequestID, rt.RidershipDataID
+			FROM #RT r 
+			JOIN [DataRequests].[dim_ridership_type] rt 
+			ON rt.RidershipDataType = CASE
+									WHEN ''' + @currentrt + ''' = ''rt1'' THEN (CASE 
+																					WHEN r.rt1 = ''Average Sat'' THEN ''Avg SAT''
+																					WHEN r.rt1 = ''Average Sun'' THEN ''Avg SUN''
+																					WHEN r.rt1 = ''Passener MIles'' THEN ''Passenger Miles''
+																					WHEN r.rt1 = ''Average Wkd'' THEN ''Avg WKD''
+																					WHEN r.rt1 = ''Boarding'' THEN ''Boardings''
+																					ELSE r.rt1
+																				END)
+									WHEN ''' + @currentrt + ''' = ''rt2'' THEN (CASE 
+																					WHEN r.rt2 = ''Average Sat'' THEN ''Avg SAT''
+																					WHEN r.rt2 = ''Average Sun'' THEN ''Avg SUN''
+																					WHEN r.rt2 = ''Passener MIles'' THEN ''Passenger Miles''
+																					WHEN r.rt2 = ''Average Wkd'' THEN ''Avg WKD''
+																					WHEN r.rt2 = ''Boarding'' THEN ''Boardings''
+																					ELSE r.rt2
+																				END)
+									WHEN ''' + @currentrt + ''' = ''rt3'' THEN (CASE 
+																					WHEN r.rt3 = ''Average Sat'' THEN ''Avg SAT''
+																					WHEN r.rt3 = ''Average Sun'' THEN ''Avg SUN''
+																					WHEN r.rt3 = ''Passener MIles'' THEN ''Passenger Miles''
+																					WHEN r.rt3 = ''Average Wkd'' THEN ''Avg WKD''
+																					WHEN r.rt3 = ''Boarding'' THEN ''Boardings''
+																					ELSE r.rt3
+																				END)
+									WHEN ''' + @currentrt + ''' = ''rt4'' THEN (CASE 
+																					WHEN r.rt4 = ''Average Sat'' THEN ''Avg SAT''
+																					WHEN r.rt4 = ''Average Sun'' THEN ''Avg SUN''
+																					WHEN r.rt4 = ''Passener MIles'' THEN ''Passenger Miles''
+																					WHEN r.rt4 = ''Average Wkd'' THEN ''Avg WKD''
+																					WHEN r.rt4 = ''Boarding'' THEN ''Boardings''
+																					ELSE r.rt4
+																				END)
+									WHEN ''' + @currentrt + ''' = ''rt5'' THEN (CASE 
+																					WHEN r.rt5 = ''Average Sat'' THEN ''Avg SAT''
+																					WHEN r.rt5 = ''Average Sun'' THEN ''Avg SUN''
+																					WHEN r.rt5 = ''Passener MIles'' THEN ''Passenger Miles''
+																					WHEN r.rt5 = ''Average Wkd'' THEN ''Avg WKD''
+																					WHEN r.rt5 = ''Boarding'' THEN ''Boardings''
+																					ELSE r.rt5
+																				END)
+									WHEN ''' + @currentrt + ''' = ''rt6'' THEN (CASE 
+																					WHEN r.rt6 = ''Average Sat'' THEN ''Avg SAT''
+																					WHEN r.rt6 = ''Average Sun'' THEN ''Avg SUN''
+																					WHEN r.rt6 = ''Passener MIles'' THEN ''Passenger Miles''
+																					WHEN r.rt6 = ''Average Wkd'' THEN ''Avg WKD''
+																					WHEN r.rt6 = ''Boarding'' THEN ''Boardings''
+																					ELSE r.rt6
+																				END)
+									WHEN ''' + @currentrt + ''' = ''rt7'' THEN (CASE 
+																					WHEN r.rt7 = ''Average Sat'' THEN ''Avg SAT''
+																					WHEN r.rt7 = ''Average Sun'' THEN ''Avg SUN''
+																					WHEN r.rt7 = ''Passener MIles'' THEN ''Passenger Miles''
+																					WHEN r.rt7 = ''Average Wkd'' THEN ''Avg WKD''
+																					WHEN r.rt7 = ''Boarding'' THEN ''Boardings''
+																					ELSE r.rt7
+																				END)
+
+									ELSE NULL
+									END
+			WHERE NOT EXISTS (
+				SELECT 1
+				FROM [UTA_BI_DW].[DataRequests].[dim_data_request_to_ridership_type] dr
+				WHERE dr.SourceID = r.SourceID
+					AND dr.RequestID = r.RequestID
+					AND dr.RidershipDataID = rt.RidershipDataID
+			)
+			';
+
+			EXEC sp_executesql @sqlrt
+			SET @counterrt = @counterrt + 1
+		End;
+
+	-- populating [DataRequests].[dim_servicedata_type]
+		drop table if exists #SD
+		CREATE TABLE #SD (
+			SourceID int,
+			RequestID int,
+			ServiceDataType varchar(500),
+			Comma_Cnt int, 
+			sd1 varchar(500),
+			sd2 varchar(500),
+			sd3 varchar(500),
+			sd4 varchar(500),
+			sd5 varchar(500),
+			sd6 varchar(500),
+			sd7 varchar(500)
+		); -- Temp Table to store and organize results of CTE series
+
+		WITH a AS (																				-- Series of CTE's to extract servicedata Type when there are variable amounts selected
+				SELECT SourceID, RequestID, ServiceData
+				FROM [DataRequests].[Stage_Asana]
+			),
+			b AS (
+				SELECT SourceID, RequestID, ServiceData, 
+					   LEN(ServiceData) - LEN(REPLACE(ServiceData, ',', '')) AS comma_cnt       -- counts the # of commas in the entry, determines amount of servicedata types chosen
+				FROM a
+			),
+			c AS ( SELECT SourceID, RequestID, ServiceData, NULL AS comma_cnt, CASE
+																WHEN ServiceData IS NULL THEN 'N/A' 
+															END AS sd1, NULL AS sd2, NULL AS sd3, NULL AS sd4, NULL AS sd5, NULL AS sd6, NULL AS sd7
+					FROM[DataRequests].[Stage_Asana]
+					WHERE ServiceData IS NULL),
+			c0 AS (SELECT SourceID, RequestID, ServiceData, comma_cnt, 
+					CASE 
+						WHEN comma_cnt < 1 THEN ServiceData
+						WHEN ServiceData IS NULL THEN 'N/A'
+					END AS sd1, NULL AS sd2, NULL AS sd3, NULL AS sd4, NULL AS sd5, NULL AS sd6, NULL AS sd7
+					FROM b
+					WHERE comma_cnt < 1),
+			sub AS (SELECT SourceID, RequestID, ServiceData, comma_cnt, LEFT(ServiceData, CHARINDEX(',', ServiceData) - 1) as s1,
+							SUBSTRING(ServiceData, CHARINDEX(',', ServiceData) + 2, (LEN(ServiceData) - CHARINDEX(',', ServiceData) + 2)) as s2
+					FROM b),
+			sub2 AS (SELECT SourceID, RequestID, ServiceData, comma_cnt, SUBSTRING(s2, CHARINDEX(',', s2) + 2, (LEN(s2) - CHARINDEX(',', s2) + 2)) as s3
+					FROM sub),
+			sub3 AS (SELECT SourceID, RequestID, ServiceData, comma_cnt, SUBSTRING(s3, CHARINDEX(',', s3) + 2, (LEN(s3) - CHARINDEX(',', s3) + 2)) as s4		-- sub cte's reduce the string after each comma and saved as a variable for easier referencing later in the CHARINDEX and LEFT/RIGHT Functions
+					FROM sub2),
+			sub4 AS (SELECT SourceID, RequestID, ServiceData, comma_cnt, SUBSTRING(s4, CHARINDEX(',', s4) + 2, (LEN(s4) - CHARINDEX(',', s4) + 2)) as s5
+					FROM sub3),
+			sub5 AS (SELECT SourceID, RequestID, ServiceData, comma_cnt, SUBSTRING(s5, CHARINDEX(',', s5) + 2, (LEN(s5) - CHARINDEX(',', s5) + 2)) as s6
+					FROM sub4),
+			c1 AS (SELECT SourceID, RequestID, ServiceData, comma_cnt, LEFT(ServiceData, CHARINDEX(',', ServiceData) - 1) com1sd1,
+							RIGHT(ServiceData, LEN(ServiceData) - CHARINDEX(',', ServiceData)-1) com1sd2, NULL AS sd3, NULL AS sd4, NULL AS sd5, NULL AS sd6, NULL AS sd7  -- null columns added to be able to union at the end
+					FROM b
+					WHERE comma_cnt = 1),
+			c2 AS (SELECT SourceID, RequestID, ServiceData, comma_cnt, LEFT(ServiceData, CHARINDEX(',', ServiceData) - 1) com2sd1,
+						LEFT(s2,  CHARINDEX(',', SUBSTRING(ServiceData, CHARINDEX(',', ServiceData) + 2, (LEN(ServiceData) - CHARINDEX(',', ServiceData) + 2))) - 1 ) com2sd2, -- c2 is a cte for strings with 2 commas and therefore 3 servicedata types
+						RIGHT(s2, LEN(s2) - CHARINDEX(',', s2) - 1) com2sd3, NULL AS sd4, NULL AS sd5, NULL AS sd6, NULL AS sd7                                              -- finds the first servicedata type by using LEFT of the first comma, reducese string to not include the first comma and repeats with the trimmed substring.
+					FROM sub
+					WHERE comma_cnt = 2),
+			c3 AS (SELECT s.SourceID, s.RequestID, s.ServiceData, s.comma_cnt, LEFT(s.ServiceData, CHARINDEX(',', s.ServiceData) - 1) com3sd1,
+						LEFT(s2,  CHARINDEX(',', SUBSTRING(s.ServiceData, CHARINDEX(',', s.ServiceData) + 2, (LEN(s.ServiceData) - CHARINDEX(',', s.ServiceData) + 2))) - 1 ) com3sd2,
+						LEFT(s3, CHARINDEX(',', s3) - 1) com3sd3,
+							RIGHT(s3, len(s3) - CHARINDEX(',', s3)-1) com3sd4, NULL AS sd5, NULL AS sd6, NULL AS sd7
+					FROM sub s JOIN sub2 b ON s.ServiceData = b.ServiceData
+					WHERE s.comma_cnt = 3),
+			c4 AS (SELECT s.SourceID, s.RequestID, s.ServiceData, s.comma_cnt, LEFT(s.ServiceData, CHARINDEX(',', s.ServiceData) - 1) com4sd1,
+						LEFT(s2,  CHARINDEX(',', SUBSTRING(s.ServiceData, CHARINDEX(',', s.ServiceData) + 2, (LEN(s.ServiceData) - CHARINDEX(',', s.ServiceData) + 2))) - 1 ) com4sd2,
+						LEFT(s3, CHARINDEX(',', s3) - 1) com4sd3,
+							LEFT(s4, CHARINDEX(',', s4) - 1) com4sd4,
+							RIGHT(s4, len(s4) - CHARINDEX(',', s4) - 1) com4sd5, NULL AS sd6, NULL AS sd7
+					FROM sub s JOIN sub2 b ON s.ServiceData = b.ServiceData JOIN sub3 c ON s.ServiceData = c.ServiceData
+					WHERE s.comma_cnt = 4),
+			c5 AS (SELECT s.SourceID, s.RequestID, s.ServiceData, s.comma_cnt, LEFT(s.ServiceData, CHARINDEX(',', s.ServiceData) - 1) com5sd1,
+						LEFT(s2,  CHARINDEX(',', SUBSTRING(s.ServiceData, CHARINDEX(',', s.ServiceData) + 2, (LEN(s.ServiceData) - CHARINDEX(',', s.ServiceData) + 2))) - 1 ) com5sd2,
+						LEFT(s3, CHARINDEX(',', s3) - 1) com5sd3,
+							LEFT(s4, CHARINDEX(',', s4)-1) com5sd4,
+							LEFT(s5, CHARINDEX(',', s5)-1) com5sd5,
+							RIGHT(s5, len(s5) - CHARINDEX(',', s5) - 1) com5sd6, NULL AS sd7
+					FROM sub s JOIN sub2 b ON s.ServiceData = b.ServiceData JOIN sub3 c ON s.ServiceData = c.ServiceData JOIN sub4 d on d.ServiceData = s.ServiceData
+					WHERE s.comma_cnt = 5),
+			c6 AS (SELECT s.SourceID, s.RequestID, s.ServiceData, s.comma_cnt, LEFT(s.ServiceData, CHARINDEX(',', s.ServiceData) - 1) com6sd1,
+						LEFT(s2,  CHARINDEX(',', SUBSTRING(s.ServiceData, CHARINDEX(',', s.ServiceData) + 2, (LEN(s.ServiceData) - CHARINDEX(',', s.ServiceData) + 2))) - 1 ) com6sd2,
+						LEFT(s3, CHARINDEX(',', s3) - 1) com6sd3,
+							LEFT(s4, CHARINDEX(',', s4) - 1) com6sd4,
+							LEFT(s5, CHARINDEX(',', s5) - 1) com6sd5,
+							LEFT(s6, CHARINDEX(',', s6) - 1) com6sd6,
+							RIGHT(s6, len(s6) - CHARINDEX(',', s6) - 1) com6sd7, NULL AS sd7
+					FROM sub s JOIN sub2 b ON s.ServiceData = b.ServiceData JOIN sub3 c ON s.ServiceData = c.ServiceData JOIN sub4 d on d.ServiceData = s.ServiceData JOIN sub5 e ON e.ServiceData = s.ServiceData
+					WHERE s.comma_cnt = 6)
+
+
+			INSERT INTO #SD (SourceID, RequestID, ServiceDataType, Comma_Cnt, sd1, sd2, sd3, sd4, sd5, sd6, sd7)
+			SELECT SourceID, RequestID, ServiceData, Comma_Cnt, sd1, sd2, sd3, sd4, sd5, sd6, sd7 FROM c
+			UNION
+			SELECT SourceID, RequestID, ServiceData, Comma_Cnt, sd1, sd2, sd3, sd4, sd5, sd6, sd7 FROM c0
+			UNION
+			SELECT SourceID, RequestID, ServiceData, Comma_Cnt, com1sd1, com1sd2, sd3, sd4, sd5, sd6, sd7 FROM c1
+			UNION
+			SELECT SourceID, RequestID, ServiceData, Comma_Cnt, com2sd1, com2sd2, com2sd3, sd4, sd5, sd6, sd7 FROM c2     -- union into temp table for easier querying and manipulation
+			UNION
+			SELECT SourceID, RequestID, ServiceData, Comma_Cnt, com3sd1, com3sd2, com3sd3, com3sd4, sd5, sd6, sd7 FROM c3
+			UNION
+			SELECT SourceID, RequestID, ServiceData, Comma_Cnt, com4sd1, com4sd2, com4sd3, com4sd4, com4sd5, sd6, sd7 FROM c4
+			UNION
+			SELECT SourceID, RequestID, ServiceData, Comma_Cnt, com5sd1, com5sd2, com5sd3, com5sd4, com5sd5, com5sd6, sd7 FROM c5
+			UNION
+			SELECT SourceID, RequestID, ServiceData, Comma_Cnt, com6sd1, com6sd2, com6sd3, com6sd4, com6sd5, com6sd6, com6sd7 FROM c6
+			ORDER BY RequestID; 
+
+			WITH ct AS (
+			SELECT DISTINCT sd1 FROM #SD WHERE sd1 IS NOT NULL
+			UNION
+			SELECT DISTINCT sd2 FROM #SD WHERE sd2 IS NOT NULL
+			UNION
+			SELECT DISTINCT sd3 FROM #SD WHERE sd3 IS NOT NULL 
+			UNION
+			SELECT DISTINCT sd4 FROM #SD WHERE sd4 IS NOT NULL							-- finds unique entries and validates existence in dim_servicedata_type. New entries are added to the dim table
+			UNION
+			SELECT DISTINCT sd5 FROM #SD WHERE sd5 IS NOT NULL
+			UNION
+			SELECT DISTINCT sd6 FROM #SD WHERE sd6 IS NOT NULL
+			UNION
+			SELECT DISTINCT sd7 FROM #SD WHERE sd7 IS NOT NULL)
+			INSERT INTO [UTA_BI_DW].[DataRequests].[dim_servicedata_type] (ServiceDataType)
+			SELECT sd1
+			FROM [UTA_BI_DW].[DataRequests].[dim_servicedata_type] sdt RIGHT JOIN ct ON ct.sd1 = sdt.ServiceDataType
+			WHERE ServiceDataType IS NULL;
+
+	-- Populating [DataRequests].[dim_data_request_to_servicedata_type]
+			drop table if exists #varlistsd
+			CREATE TABLE #varlistsd (SDval varchar(10));					
+			INSERT INTO #varlistsd (SDval)
+				VALUES ('sd1'), ('sd2'), ('sd3'), ('sd4');
+
+			DECLARE @countersd INT = 1;
+			DECLARE @maxcountsd INT = (SELECT COUNT(*) FROM #varlistsd);
+			DECLARE @currentsd varchar(10);
+			DECLARE @sqlsd nvarchar(max);
+
+			WHILE @countersd <= @maxcountsd
+			BEGIN
+				SELECT @currentsd = SDval
+				FROM (
+					SELECT SDval, ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS RowNum
+					FROM #varlistsd
+				) AS OrderedVarList
+				WHERE RowNum = @countersd
+	
+				SET @sqlsd = N'INSERT INTO [UTA_BI_DW].[DataRequests].[dim_data_request_to_servicedata_type] (SourceID, RequestID, ServiceDataTypeID)
+				SELECT s.SourceID, s.RequestID, sd.ServiceDataTypeID
+				FROM #SD s
+				JOIN [UTA_BI_DW].[DataRequests].[dim_servicedata_type] sd
+				ON sd.ServiceDataType = CASE
+										WHEN ''' + @currentsd + ''' = ''sd1'' THEN s.sd1
+										WHEN ''' + @currentsd + ''' = ''sd2'' THEN s.sd2
+										WHEN ''' + @currentsd + ''' = ''sd3'' THEN s.sd3
+										WHEN ''' + @currentsd + ''' = ''sd4'' THEN s.sd4
+										ELSE NULL
+										END
+				WHERE NOT EXISTS (
+					SELECT 1
+					FROM [UTA_BI_DW].[DataRequests].[dim_data_request_to_servicedata_type] dr
+					WHERE dr.SourceID = s.SourceID
+						AND dr.RequestID = s.RequestID
+						AND dr.ServiceDataTypeID = sd.ServiceDataTypeID
+				)
+				';
+
+				EXEC sp_executesql @sqlsd
+				SET @countersd = @countersd +1
+			End;
+
+		-- populate dim.section
+
+		INSERT INTO [DataRequests].[dim_section] (Section)
+		SELECT DISTINCT [Section/Column]
+		FROM [DataRequests].[Stage_Asana] a
+		WHERE a.[Section/Column] IS NOT NULL AND NOT EXISTS (SELECT 1
+							FROM [DataRequests].[dim_section] s
+							WHERE a.[Section/Column] = s.Section)
+
+		------------------------------------------------------------ Completion Tables -------------------------------------------------------------------------------------------
+
+		-- populating dim_status
+
+		INSERT INTO [DataRequests].[dim_status] (CompletionStatus)
+		SELECT DISTINCT [Status]
+		FROM [DataRequests].[Stage_Asana] a
+		WHERE a.[Status] IS NOT NULL AND NOT EXISTS (SELECT 1
+														FROM [DataRequests].[dim_status] s
+														WHERE a.[Status] = s.CompletionStatus
+													)
+
+		-- populating dim_assignee
+
+		INSERT INTO [DataRequests].[dim_assignee] (Assigned_To)
+		SELECT DISTINCT CompletionDetails
+		FROM [DataRequests].[Stage_Asana] a
+		WHERE a.CompletionDetails IS NOT NULL AND NOT EXISTS (SELECT *
+																FROM [DataRequests].[dim_assignee] s
+																WHERE a.CompletionDetails = s.Assigned_To
+															)
+	--------------------------------------------------------------- HANDLING REQUESTER INFORMATION ---------------------------------------------------------------------------------
+
+	---- Extracting RequestedByID
+		drop table if exists #rqst;
+
+		WITH a AS (SELECT SourceID, RequestID, RequestedBy, RequestNotes, CHARINDEX('Email Address:', RequestNotes) 'email location'
+					FROM [UTA_BI_DW_staging].[DataRequests].[Stage_Asana]),
+
+			b AS (SELECT SourceID, RequestID, RequestedBy, RequestNotes, RIGHT([RequestNotes], len(requestnotes) - [email location]) 'trimmed'
+					FROM a),
+			c AS (SELECT SourceID, RequestID, RequestedBy, RequestNotes, trimmed, CHARINDEX(char(10), trimmed) 'carriage_loc'
+					FROM b),
+			d AS (SELECT *, RIGHT(trimmed, len(trimmed) - carriage_loc) 'trim2'                                      -- CTE's sequentially extract the requester's email from the notes column
+					FROM c),																						 -- Find position of landmark character and trim input until it's at an easy place to extract 
+			e AS (SELECT *, CHARINDEX(char(10), trim2)-1 'car2'
+					FROM d),
+			f AS (SELECT *, CASE
+								WHEN [RequestNotes] IS NULL THEN NULL
+								WHEN LEFT(trim2, car2) IS NULL THEN NULL
+								WHEN LEFT(trim2, car2) = '' THEN NULL
+								ELSE LEFT(trim2, car2)
+							END AS Email
+					FROM e)
+
+		SELECT * INTO #rqst from f;   -- Load temp table to more easily join and lookup values
+
+		DROP TABLE IF EXISTS #temprqstby;
+		WITH badge as (SELECT SourceID, RequestID, Badge, e.EmpFullName, rq.Email
+						FROM UTA_BI_DW.General.dim_EmployeeDetails e RIGHT JOIN #rqst rq ON rq.Email = e.Email   -- badge selects the employee details found with email
+						WHERE RequestNotes IS NOT NULL),
+			badge_err as (SELECT SourceID, RequestID, Email, Badge                                               -- badge_err stores records that couldn't be found with email
+						FROM badge WHERE Badge IS NULL ),
+			a as (SELECT a.SourceID, a.RequestID, RequestedBy, RequestNotes, CHARINDEX(':', RequestNotes) AS loc
+					FROM [UTA_BI_DW_staging].[DataRequests].[Stage_Asana] a JOIN badge_err b ON a.RequestID = b.RequestID  
+					WHERE RequestNotes IS NOT NULL),
+			b as (SELECT *, RIGHT(RequestNotes, (len(RequestNotes) - loc) - 1) AS string                                 -- A through D extracts emp first and last through requestnotes from the records that couldn't pull employee details with Email (badge_err). Email was done first because it's more precise given the right format (employee email) and is in the right format the majority of the time
+					FROM a                                                                                               -- First and Last doesn't always work due to user input error, though it's worth the effort for the few records that don't get pulled with email
+					WHERE loc = 13),
+			c as (SELECT *, LEFT(string, CHARINDEX(' ', string)) [Firstn],
+						RTRIM(LEFT(RIGHT(string, len(string) - CHARINDEX(' ', string)), CHARINDEX(CHAR(10), RIGHT(string, len(string) - CHARINDEX(' ', string))))) AS [Lastn]
+					FROM b),
+			d as (SELECT SourceID, RequestID, LTRIM(REPLACE([Lastn], CHAR(10), '')) AS [Last], LTRIM(RTRIM([Firstn])) AS [First] -- CHAR10 is a carriage return/line break that can't be trimmed, so replace it with a space and then trim to have isolated lname
+					FROM c),
+			badge2 AS (SELECT SourceID, RequestID, e.EmpFullName, e.LastName, e.FirstName, d.[Last], d.[First], Badge
+						FROM d LEFT JOIN UTA_BI_DW.General.dim_EmployeeDetails e ON d.First = e.FirstName AND d.Last = e.LastName),        --
+			notes_error as (SELECT SourceID, RequestID, RequestedBy AS [First], NULL AS [Last], 'CANNOT EXTRACT REQUEST DETAILS' AS [rqstr_ERROR]
+					FROM a
+					WHERE loc <> 13),                                                                                                                        -- notes_error stores additional anomalous data where the requestnotes is in a different format (i.e. RequestNotes doesn't start with 'Requested By: ')
+			rqstr_error AS (SELECT SourceID, RequestID, [First], [Last], 'INVALID EMAIL OR NAME -- NO BADGE' AS [ERROR] FROM badge2 bd WHERE Badge IS NULL   -- rqstr_error stores anomalous records that couldn't be found with email and f/lname
+							UNION
+							SELECT SourceID, RequestID, [First], [Last], [rqstr_ERROR] FROM notes_error),
+			REQUESTEDBY AS (SELECT SourceID, RequestID, RequestedByID, EmpFullName, badge
+							FROM badge2 b2 JOIN DataRequests.dim_requester r ON b2.Badge = r.BadgeNum                              -- UNION to combine records found with email with the ones found with f/lname
+							UNION
+							SELECT SourceID, RequestID, RequestedByID, EmpFullName, Badge
+							FROM badge bd JOIN DataRequests.dim_requester r ON bd.Badge = r.BadgeNum)
+			SELECT rb.SourceID, rb.RequestID, rb.RequestedByID, LTRIM(RTRIM(EmpFullName)) AS RequestedBy, Badge, rq.SourceID AS [error_source], rq.RequestID AS [error_rqid], rq.[First] AS [error_first], rq.[Last] AS [error_last], rq.ERROR INTO #temprqstby
+			FROM REQUESTEDBY rb FULL OUTER JOIN rqstr_error rq ON rb.RequestID = rq.RequestID
+			                                                                                                                        -- Load into temp table for easier querying and transformation
+			IF EXISTS (SELECT 1 FROM #temprqstby WHERE error_source IS NOT NULL)
+			BEGIN
+				SELECT error_source, error_rqid, [error_first], [error_last], ERROR FROM #temprqstby WHERE error_source IS NOT NULL -- Returns error results if any
+			END
+
+		--- Populating dim.requester
+		
+		INSERT INTO [UTA_BI_DW].[DataRequests].[dim_requester](
+				BadgeNum,
+				RequestedBy)
+		SELECT DISTINCT Badge, RequestedBy
+		FROM #temprqstby t
+		WHERE RequestID IS NOT NULL AND RequestedByID IS NOT NULL AND NOT EXISTS (SELECT 1 FROM [DataRequests].[dim_requester] r WHERE t.Badge = r.BadgeNum)                     
+
+
+		--- Handling Parent and Subtasks
+		
+		DROP TABLE IF EXISTS #temptasks;
+		WITH ParentTasks AS (SELECT RequestID, RequestedBy AS [ParentTask], ParentTask AS [SubTask], CreatedOn 
+								FROM [UTA_BI_DW_staging].[DataRequests].[Stage_Asana] WHERE ParentTask IS NULL), 
+			Subtasks AS (SELECT RequestID, RequestedBy AS [Sub], ParentTask, CreatedOn, CompletionDate, [Last Modified]				-- parent and subtasks are listed as two seperate requests in the requestedby column
+							FROM [UTA_BI_DW_staging].[DataRequests].[Stage_Asana] WHERE ParentTask IS NOT NULL),					-- this query combines the row and correctly assigns the tasks to the parent or sub task columns
+			tasks AS (SELECT DISTINCT p.RequestID, p.[ParentTask], COALESCE(s.[Sub], p.[SubTask]) AS [SubTask], p.CreatedOn, CompletionDate, [Last Modified]	
+						FROM ParentTasks p LEFT JOIN Subtasks s ON p.[ParentTask] = s.ParentTask AND p.CreatedOn = s.CreatedOn)
+		SELECT * INTO #temptasks FROM tasks;
+
+		------------------------------------------------------ fact_data_request ------------------------------------------------------------------------
+		-- staging dateid's
+		DROP TABLE IF EXISTS #tempdate;                                     --load into temp table, each column is a table extracting dateid, joined to the date table ON that unique column from staging
+		WITH req AS (SELECT SourceID, RequestID, DateID AS DateRequestedID
+				FROM [UTA_BI_DW_staging].[DataRequests].[Stage_Asana] a LEFT JOIN UTA_BI_DW.General.dim_date d ON a.DateRequested = d.FullDateUSA),
+			ded AS (SELECT SourceID, RequestID, DateID AS DateDeadlineID
+						FROM [UTA_BI_DW_staging].[DataRequests].[Stage_Asana] a LEFT JOIN UTA_BI_DW.General.dim_date d ON a.Deadline = d.FullDateUSA),
+			strt AS (SELECT SourceID, RequestID, DateID AS DateFromId
+						FROM [UTA_BI_DW_staging].[DataRequests].[Stage_Asana] a LEFT JOIN UTA_BI_DW.General.dim_date d ON a.StartDate = d.FullDateUSA),
+			nd AS (SELECT SourceID, RequestID, DateID AS DateToId
+						FROM [UTA_BI_DW_staging].[DataRequests].[Stage_Asana] a LEFT JOIN UTA_BI_DW.General.dim_date d ON a.EndDate = d.FullDateUSA),
+			due AS (SELECT SourceID, RequestID, DateID AS DueDateID
+						FROM [UTA_BI_DW_staging].[DataRequests].[Stage_Asana] a LEFT JOIN UTA_BI_DW.General.dim_date d ON a.DueDate = d.FullDateUSA),
+			comp AS (SELECT SourceID, RequestID, DateID AS CompletionDateID
+						FROM [UTA_BI_DW_staging].[DataRequests].[Stage_Asana] a LEFT JOIN UTA_BI_DW.General.dim_date d ON a.CompletionDate = d.FullDateUSA),
+			creatd AS (SELECT SourceID, RequestID, DateID AS CreatedOnID
+						FROM [UTA_BI_DW_staging].[DataRequests].[Stage_Asana] a LEFT JOIN UTA_BI_DW.General.dim_date d ON a.CreatedOn = d.FullDateUSA),
+			lm AS (SELECT SourceID, RequestID, DateID AS LastModified
+						FROM [UTA_BI_DW_staging].[DataRequests].[Stage_Asana] a LEFT JOIN UTA_BI_DW.General.dim_date d ON a.[Last Modified] = d.FullDateUSA),
+			sbcomp AS (SELECT RequestID, DateID As SubTask_CompletionDateID
+						FROM #temptasks tt LEFT JOIN UTA_BI_DW.General.dim_date d ON tt.CompletionDate = d.FullDateUSA),
+			sblm AS (SELECT RequestID, DateID As SubTask_LastModified
+						FROM #temptasks tt LEFT JOIN UTA_BI_DW.General.dim_date d ON tt.[Last Modified] = d.FullDateUSA),
+			dates AS (SELECT req.SourceID, req.RequestID, req.DateRequestedID, ded.DateDeadlineID, strt.DateFromId, nd.DateToId, due.DueDateID, comp.CompletionDateID, creatd.CreatedOnID, lm.LastModified, sbcomp.SubTask_CompletionDateID, sblm.SubTask_LastModified
+						FROM req JOIN ded ON req.RequestID = ded.RequestID JOIN strt ON req.RequestID = strt.RequestID JOIN nd ON nd.RequestID = req.RequestID JOIN due ON due.RequestID = req.RequestID JOIN comp ON comp.RequestID = req.RequestID JOIN creatd ON creatd.RequestID = req.RequestID JOIN lm ON lm.RequestID = req.RequestID JOIN sbcomp ON sbcomp.RequestID = req.RequestID JOIN sblm ON sblm.RequestID = req.RequestID)
+		SELECT * INTO #tempdate FROM dates;
+
+		-- Updating fact table
+
+		UPDATE fct
+		SET 
+			AssigneeID = ISNULL(sig.AssigneeID, -1),
+			StatusID = CASE
+							WHEN fct.CompletionDateID IS NOT NULL THEN 1      -- If completion date is not null, request is completed, status updates to completed
+							ELSE ISNULL(st.StatusID,  -1)                     -- If completion date is null and status is not null, use status from stage as fact statusid
+							END,
+			CompletionDateID = td.CompletionDateID,
+			CreatedOnID = td.CreatedOnID,
+			LastModified = td.LastModified,
+			DateRequestedID = td.DateRequestedID,
+			DateFromId = td.DateFromId,
+			DateToId = td.DateToId,
+			DueDateID = td.DueDateID,
+			DataTypeID = ISNULL(dt.DataTypeID, -1),
+			BreakdownTypeID = ISNULL(bt.BreakdownTypeID, -1),
+			IsGramaRequest = CASE
+								WHEN sc.SectionID = 2 THEN 1       -- SectionID can denote if Request is GramaRequest, if so, update accordingly
+								ELSE ISNULL(gr.GramaRequestID, 0)  -- if grama request is 0 THEN 0 if NULL then insert 0
+								END,
+			SectionID = ISNULL(sc.SectionID, -1),
+			ParentTask = tt.ParentTask,
+			SubTask = tt.SubTask,
+			SubTask_CompletionDateID = td.SubTask_CompletionDateID,
+			SubTask_LastModified = td.SubTask_LastModified,
+			RequestDescription = a.RequestDescription,
+			DataRequirements = a.DataRequirements,
+			Notes = a.RequestNotes,
+			Tags =	a.Tags,
+			Blocking = a.[Blocking/Dependencies],
+			BlockedBy = a.BlockedBy,
+			Project = a.Projects
+		FROM DataRequests.Stage_Asana a JOIN UTA_BI_DW.DataRequests.fact_data_request fct ON a.SourceID = fct.SourceID AND a.RequestID = fct.RequestID
+						LEFT JOIN #temprqstby t ON a.SourceID = t.SourceID AND a.RequestID = t.RequestID
+						LEFT JOIN DataRequests.dim_data_type dt ON a.DataType = dt.DataType
+						LEFT JOIN dim_breakdown_type bt ON a.Breakdown = bt.BreakdownType
+						LEFT JOIN #temptasks tt ON a.RequestID = tt.RequestID
+						LEFT JOIN dim_grama_request gr ON a.GramaRequest = gr.GramaRequest
+						LEFT JOIN dim_section sc ON a.[Section/Column] = sc.Section
+						LEFT JOIN dim_assignee sig ON a.CompletionDetails = sig.Assigned_To
+						LEFT JOIN dim_status st ON a.[Status] = st.CompletionStatus
+						LEFT JOIN #tempdate td ON a.RequestID = td.RequestID
+		WHERE                                                                                               -- WHERE looks at each column in staging and if it exists in fact, checks each fact column to look for differences
+			ISNULL(fct.AssigneeID, -2) <> ISNULL(sig.AssigneeID, -2) OR                                     -- If any are different, updates accordingly, if null insert -2 to spot anomalies in fact table
+			ISNULL(fct.StatusID, -2) <> ISNULL(st.StatusID, -2) OR
+			ISNULL(fct.CompletionDateID, -2) <> ISNULL(td.CompletionDateID, -2) OR
+			ISNULL(fct.CreatedOnID, -2) <> ISNULL(td.CreatedOnID, -2) OR
+			ISNULL(fct.LastModified, -2) <> ISNULL(td.LastModified, -2) OR
+			ISNULL(fct.DateRequestedID, -2) <> ISNULL(td.DateRequestedID, -2) OR
+			ISNULL(fct.DateDeadlineID, -2) <> ISNULL(td.DateDeadlineID, -2) OR
+			ISNULL(fct.DateFromId, -2) <> ISNULL(td.DateFromId, -2) OR
+			ISNULL(fct.DateToId, -2) <> ISNULL(td.DateToId, -2) OR
+			ISNULL(fct.DueDateID, -2) <> ISNULL(td.DueDateID, -2) OR
+			ISNULL(fct.DataTypeId, -2) <> ISNULL(dt.DataTypeID, -2) OR
+			ISNULL(fct.BreakdownTypeID, -2) <> ISNULL(bt.BreakdownTypeID, -2) OR
+			(ISNULL(fct.IsGramaRequest, -2) <> ISNULL(gr.GramaRequestID, -2) AND a.GramaRequest IS NOT NULL) OR
+			ISNULL(fct.SectionID, -2) <> ISNULL(sc.SectionID, -2) OR
+			ISNULL(fct.ParentTask, -2) <> ISNULL(tt.ParentTask, -2) OR
+			ISNULL(fct.SubTask, -2) <> ISNULL(tt.SubTask, -2) OR
+			ISNULL(fct.SubTask_CompletionDateID, -2) <> ISNULL(td.SubTask_CompletionDateID, -2) OR
+			ISNULL(fct.SubTask_LastModified, -2) <> ISNULL(td.SubTask_LastModified, -2) OR
+			ISNULL(fct.RequestDescription,-2) <> ISNULL(a.RequestDescription, -2) OR
+			ISNULL(fct.DataRequirements, -2) <> ISNULL(a.DataRequirements, -2) OR
+			ISNULL(fct.Notes, -2) <> ISNULL(a.RequestNotes, -2) OR
+			ISNULL(fct.Tags, -2) <> ISNULL(a.Tags, -2) OR
+			ISNULL(fct.Blocking, -2) <> ISNULL(a.[Blocking/Dependencies], -2) OR
+			ISNULL(fct.BlockedBy, -2) <> ISNULL(a.BlockedBy, -2) OR
+			ISNULL(fct.Project, -2) <> ISNULL(a.Projects, -2)
+ 
+		;
+		
+		----- Populate fact table
+		INSERT INTO UTA_BI_DW.DataRequests.fact_data_request
+						(SourceID, RequestID, RequestedByID, AssigneeID, StatusID, CompletionDateID, CreatedOnID, LastModified,
+						DateRequestedID, DateDeadlineID, DateFromId, DateToId, DueDateID, RequestTypeID, DataTypeID, BreakdownTypeID, IsGramaRequest, SectionID, ParentTask, 
+						SubTask, SubTask_CompletionDateID, SubTask_LastModified, RequestDescription, DataRequirements, Notes, Blocking, BlockedBy, Tags, Project)
+		SELECT
+				a.SourceID, a.RequestID, 
+				t.RequestedByID, 
+				ISNULL(sig.AssigneeID, -1), 
+				CASE
+					WHEN d.CompletionDateID IS NOT NULL THEN 1     -- If completion date is not null, request is completed, status updates to completed
+					ELSE ISNULL(st.StatusID,  -1)                  -- If completion date is null and status is not null, use status from stage as fact statusid
+				END AS CompletionDateID, 
+				d.CompletionDateID, d.CreatedOnID, d.LastModified,
+				d.DateRequestedID, d.DateDeadlineID, d.DateFromId, d.DateToId, d.DueDateID,
+				-1 AS RequestTypeID,
+				ISNULL(dt.DataTypeID, -1) AS [DataTypeID],
+				ISNULL(bt.BreakdownTypeID, -1) AS [BreakdownTypeID],   -- Lookup bt or dt, IF NOT NULL THEN bt or dt, IF NULL THEN -1
+				CASE
+					WHEN sc.SectionID = 2 THEN 1
+					ELSE ISNULL(gr.GramaRequestID, 0)  -- if grama request is 0 THEN 0 if NULL then insert a 0
+				END AS GramaRequest,
+				ISNULL(sc.SectionID, -1) AS SectionID,
+				tt.ParentTask, tt.[SubTask], d.SubTask_CompletionDateID, d.SubTask_LastModified,
+				a.RequestDescription,
+				a.DataRequirements,
+				a.RequestNotes,
+				a.Tags,
+				a.[Blocking/Dependencies],
+				a.BlockedBy,
+				a.Projects
+
+		FROM DataRequests.Stage_Asana a LEFT JOIN #temprqstby t ON a.SourceID = t.SourceID AND a.RequestID = t.RequestID
+						LEFT JOIN DataRequests.dim_data_type dt ON a.DataType = dt.DataType
+						LEFT JOIN #tempdate d ON a.SourceID = d.SourceID AND a.RequestID = d.RequestID
+						LEFT JOIN dim_breakdown_type bt ON a.Breakdown = bt.BreakdownType
+						LEFT JOIN #temptasks tt ON a.RequestID = tt.RequestID
+						LEFT JOIN dim_grama_request gr ON a.GramaRequest = gr.GramaRequest
+						LEFT JOIN dim_section sc ON a.[Section/Column] = sc.Section
+						LEFT JOIN dim_assignee sig ON a.CompletionDetails = sig.Assigned_To
+						LEFT JOIN dim_status st ON a.[Status] = st.CompletionStatus
+		WHERE RequestedByID IS NOT NULL AND NOT EXISTS (SELECT 1 FROM UTA_BI_DW.DataRequests.fact_data_request fct WHERE a.RequestID = fct.RequestID AND a.SourceID = fct.SourceID);
+
+	END TRY
+	BEGIN CATCH
+		INSERT INTO [UTA_BI_DW].[DataRequests].[Error_Log] (
+		ErrorLine,
+		ErrorMessage,
+		ErrorDate
+			)
+		SELECT ERROR_LINE(), ERROR_MESSAGE(), GETDATE()
+		FROM [UTA_BI_DW_staging].[DataRequests].[Stage_Asana]
+	END CATCH;
+
+END
