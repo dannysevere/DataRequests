@@ -1,4 +1,4 @@
-# DataRequests ETL and Visualization Project
+# Data Requests ETL and Visualization Project
 Data Requests were originally taken from a Sharepoint form but were recently tranferred to an Asana form. These forms are both dumped into an excel sheet, though with different formats, thus needing similar ETL structures but different processes. 
 A SQL Server Integration Services package facilitates these processes. 
 First, a staging table is truncated and Second, data is copied from the excel file into the empty staging table.
