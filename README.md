@@ -1,8 +1,8 @@
 # Data Requests ETL and Visualization Project
-Data Requests were originally taken from a Sharepoint form but were recently tranferred to an Asana form. These forms are both dumped into an excel sheet, though with different formats, thus needing similar ETL structures but different processes. 
+Data Requests were originally taken from a Sharepoint form but were recently tranferred to Asana. These forms are both dumped into an excel sheet but have different formats, thus needing similar ETL structures but different processes. 
 A SQL Server Integration Services package facilitates these processes. 
 First, a staging table is truncated and Second, data is copied from the excel file into the empty staging table.
-Next, an Upsert stored procedure is executed to load data into a production table for historical recording. The Upsert query merges the staging table [source] with the production table [target]. Records that exist in staging but not production, are inserted. Records that exist in both, are checked at each field for any differences, if no differences are found, the record is ignored, if found, the record is updated in production. 
+Next, an Upsert stored procedure is executed to load the raw data into a production table for historical recording. The Upsert query merges the staging table [source] with the production table [target]. Records that exist in staging but not production, are inserted. Records that exist in both, are checked at each field for any differences, if no differences are found, the record is ignored, if found, the record is updated in production. 
 Two triggers exist that will send the updated or inserted records into an AUDIT table. 
 The staging table is truncated and the records that exist in the audit table are copied back into the staging, so that staging only includes 'new' data. The audit table is truncated.
 
@@ -19,6 +19,6 @@ Lastly, I was tasked with creating Reports for the data with SQL Server Reportin
 
 I learned a lot during this project. My SQL skills are much more advanced than when I initally started. I've become skilled in parsing text with CHARINDEX and LEFT AND RIGHT FUNCTIONS and using these parsed values to lookup additional values. I've learned the value of using CTE's to manipulate data. Instead of trying to fit everything into one query through a mess of functions, I took the extra space and wrote additional queries to give everything approiate aliases and tranformations to make the final query as simple as possible. This also led me to learn how to use temp tables, which became crucial to the integrity of my large query. These tools will save me much time in future projects, and I'll be able to resort to them before problems arise rather than try them on the nth try of fixing a problem. 
 
-I've also learned the importance of working with a clear head. Many times I would spend hours working on problems to no avail, when I would decide to take lunch or trt again in the morning. Countless times, the answer would come to me as I was mindlessly going about my day. I always came right back into work and would immediately solve the problem after a little bit of trouble shooting.
+I've also learned the importance of working with a clear head. Many times I would spend hours working on problems to no avail, when I would decide to take lunch or try again in the morning. Countless times, the answer would come to me as I was mindlessly going about my day. I always came right back into work and would immediately solve the problem after a little bit of trouble shooting.
 
 I'm excited to work on more ETL processes with the use of SQL stored procedures.
